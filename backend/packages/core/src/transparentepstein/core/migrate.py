@@ -8,6 +8,7 @@ from transparentepstein.core.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 MIGRATIONS = Path(__file__).resolve().parents[5] / "db" / "migrations"
+print(MIGRATIONS)
 
 TRACKING = """
 CREATE SCHEMA IF NOT EXISTS ops;
