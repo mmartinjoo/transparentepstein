@@ -1,0 +1,8 @@
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.uv]
+default-groups = ["dev"]
