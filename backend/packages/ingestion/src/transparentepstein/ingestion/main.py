@@ -1,14 +1,14 @@
 from pprint import pprint
 import asyncio
 
-from transparentepstein.ingestion import scraper
+from transparentepstein.ingestion import scraper, stages
 from transparentepstein.core.db import close_apool
 from transparentepstein.core.logging import setup_logging
 
 async def async_main():
     try:
         setup_logging()
-        await scraper.discover(1)
+        await stages.discover_stage()
     finally:
         await close_apool()
     
