@@ -1,0 +1,25 @@
+[project]
+name = "transparentepstein-ingestion"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "martinjoo", email = "martin@martinjoo.dev" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "transparentepstein-core",
+]
+
+[project.scripts]
+ingest = "transparentepstein.ingestion.main:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+transparentepstein-core = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "transparentepstein.ingestion"

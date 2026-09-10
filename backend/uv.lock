@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "transparentepstein-classification",
     "transparentepstein-core",
+    "transparentepstein-ingestion",
 ]
 
 [manifest.dependency-groups]
@@ -563,6 +564,17 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
 ]
+
+[[package]]
+name = "transparentepstein-ingestion"
+version = "0.1.0"
+source = { editable = "packages/ingestion" }
+dependencies = [
+    { name = "transparentepstein-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "transparentepstein-core", editable = "packages/core" }]
 
 [[package]]
 name = "typing-extensions"
