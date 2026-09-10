@@ -3,11 +3,12 @@ import asyncio
 
 from transparentepstein.ingestion import scraper
 from transparentepstein.core.db import close_apool
+from transparentepstein.core.logging import setup_logging
 
 async def async_main():
     try:
-        data_sets = await scraper.discover(2)
-        pprint(data_sets)
+        setup_logging()
+        await scraper.discover(1)
     finally:
         await close_apool()
     

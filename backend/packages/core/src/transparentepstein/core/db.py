@@ -64,6 +64,26 @@ async def select_one(
             if raise_on_not_found and result is None:
                 raise RecordNotFoundError(f"record not found for {query} with {inputs}")
     return result
+
+async def insert(
+    query: str,
+    inputs: list,
+):
+    pool = await apool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, inputs)
+            await conn.commit()
+            
+async def update(
+    query: str,
+    inputs: list,
+):
+    pool = await apool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, inputs)
+            await conn.commit()
         
 @lru_cache(maxsize=1)
 def pool() -> ConnectionPool:

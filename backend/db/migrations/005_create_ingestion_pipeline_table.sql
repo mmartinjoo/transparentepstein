@@ -1,5 +1,6 @@
 create table if not exists ops.ingestion_pipeline(
     id serial primary key,
+    data_set_id int not null references ops.data_sets(id),
     url text not null unique,
     downloaded boolean not null default false,
     chunked boolean not null default false,
