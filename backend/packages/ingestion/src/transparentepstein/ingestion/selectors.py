@@ -1,5 +1,5 @@
 from psycopg.rows import class_row
-from transparentepstein.ingestion.models import DataSet
+from transparentepstein.ingestion.models import DataSet, IngestionPipeline
 from transparentepstein.core import db
 
 async def find_data_set(data_set_id: int) -> DataSet:
@@ -14,4 +14,18 @@ async def find_data_set(data_set_id: int) -> DataSet:
         """,
         inputs=[data_set_id],
         row_factory=class_row(DataSet),
+    )
+    
+async def find_ingestion_pipeline(id: int) -> IngestionPipeline:
+    assert id is not None
+        
+    return await db.select_one(
+        query="""
+            select *
+            from ops.ingestion_pipeline                  
+            where id = %s
+            limit 1
+        """,
+        inputs=[id],
+        row_factory=class_row(IngestionPipeline),
     )
