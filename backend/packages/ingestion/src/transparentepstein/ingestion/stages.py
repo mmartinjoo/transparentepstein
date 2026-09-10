@@ -1,7 +1,7 @@
 import logging
+from pprint import pprint
 
-from transparentepstein.core import db
-from transparentepstein.ingestion import selectors, scraper, services
+from transparentepstein.ingestion import selectors, scraper, queue
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +19,13 @@ async def discover_stage():
     if len(urls) == 0:
         raise NothingToDiscoverError(f"zero URLs discovered for {data_set.name} at page {next_page}")
     
-    await services.add_urls_to_ingestion_pipeline(
+    await queue.enqueue_urls(
         urls=urls,
         data_set_id=data_set.id,
     )
-            
+    
     logger.info(f"discovered {len(urls)} URLs on page {next_page}")
+    
+async def fetch_stage():
+    items = await queue.dequeue_for_fetch()
+    pprint(items)

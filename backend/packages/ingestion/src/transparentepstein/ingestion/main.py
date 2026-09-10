@@ -1,19 +1,14 @@
 from pprint import pprint
 import asyncio
 
-from transparentepstein.ingestion import scraper, stages, status, selectors
+from transparentepstein.ingestion import scraper, stages, selectors
 from transparentepstein.core.db import close_apool
 from transparentepstein.core.logging import setup_logging
 
 async def async_main():
     try:
         setup_logging()
-        # await stages.discover_stage()
-        pipeline = await selectors.find_ingestion_pipeline(id=52)
-        status.guard_transition(
-            ingestion_pipeline=pipeline,
-            to_status=status.IngestionPipelineStatus.CHUNKING,
-        )
+        await stages.fetch_stage()
     finally:
         await close_apool()
     
