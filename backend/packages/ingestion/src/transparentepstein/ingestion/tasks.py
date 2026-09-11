@@ -7,8 +7,6 @@ import traceback
 from transparentepstein.core import storage, celery
 from transparentepstein.ingestion import queue, selectors, services
 from transparentepstein.ingestion.models import Document
-from transparentepstein.classification import create_classifier
-from transparentepstein.classification.classifier.base import ClassificationLabel, ClassifierType
 
 logger = logging.getLogger(__name__)
 
