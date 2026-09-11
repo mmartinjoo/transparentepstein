@@ -15,3 +15,6 @@ api:
 
 migrate:
 	uv run migrate
+
+worker:
+	uv run celery -A transparentepstein.ingestion.tasks worker --loglevel=info

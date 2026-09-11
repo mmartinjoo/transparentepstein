@@ -7,7 +7,7 @@ from psycopg.rows import class_row
 from transparentepstein.core import db
 
 MAX_ATTEMPTS = 10
-FETCH_LIMIT = 50
+FETCH_LIMIT = 100
 
 @dataclass
 class Item():
@@ -67,6 +67,18 @@ async def dequeue_for_fetch() -> list[Item]:
                 FETCH_LIMIT,
             ])
             return await cur.fetchall()
+        
+async def find_items(item_ids: list[int]) -> list[Item]:
+    in_clause = ','.join(['%s'] * len(item_ids))
+    return await db.select_many(
+        query=f"""
+            select *
+            from ops.ingestion_queue                   
+            where id in ({in_clause})
+        """,
+        inputs=tuple(item_ids),
+        row_factory=class_row(Item),
+    )
     
 class Status(Enum):
     WAITING_FOR_FETCH = "waiting_for_fetch"

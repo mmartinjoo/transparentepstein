@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     chroma_port: int
     chroma_ssl: bool
     
+    redis_url: str
+    
     openai_api_key: str
     mistral_api_key: str
     

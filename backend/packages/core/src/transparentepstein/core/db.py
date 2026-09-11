@@ -34,7 +34,7 @@ async def close_apool() -> None:
         
 async def select_many(
     query: str, 
-    inputs: list,
+    inputs: list | tuple,
     row_factory = None,
 ) -> list:
     if row_factory is None:

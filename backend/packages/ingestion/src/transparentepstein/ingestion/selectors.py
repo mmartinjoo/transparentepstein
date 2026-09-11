@@ -1,6 +1,7 @@
 from psycopg.rows import class_row
 from transparentepstein.ingestion.models import DataSet
 from transparentepstein.core import db
+from transparentepstein.ingestion.queue import Item
 
 async def find_data_set(data_set_id: int) -> DataSet:
     assert data_set_id is not None

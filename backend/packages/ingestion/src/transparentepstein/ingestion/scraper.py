@@ -30,7 +30,7 @@ async def discover(data_set: DataSet, page: int) -> list[str]:
     
     async with aiohttp.ClientSession(headers=headers) as session:        
         async with session.get(url) as response:
-            logging.info(f"status code {response.status}")
+            logger.info(f"status code {response.status}")
             
             html = await response.text()
             
