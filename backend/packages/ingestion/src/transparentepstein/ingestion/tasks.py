@@ -10,7 +10,7 @@ from transparentepstein.core import storage
 from transparentepstein.ingestion import queue, selectors, services
 from transparentepstein.ingestion.models import Document
 from transparentepstein.classification import create_classifier
-from transparentepstein.classification.classifier.base import ClassificationLabel, Classifier, ClassifierType
+from transparentepstein.classification.classifier.base import ClassificationLabel, ClassifierType
 
 app = Celery("tasks", broker=settings.redis_url, backend=settings.redis_url)
 
@@ -205,8 +205,9 @@ async def classify_one(document: Document, item_id: int) -> dict:
         if document.content is None or len(document.content) == 0:
             raise ValueError(f"content is None for document {document.id}")
         
+        # it's a simple regex classifier so the :500 makes sure that those keywords don't just randomly come up in a long document and gets classified as EMAIL
         classifier = create_classifier(type=ClassifierType.REGEX)
-        label: ClassificationLabel = classifier.classify(content=document.content)
+        label: ClassificationLabel = classifier.classify(content=document.content[:500])
         
         if label is None:
             raise ValueError("classifier returned None")

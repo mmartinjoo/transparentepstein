@@ -208,7 +208,7 @@ async def classification_stage():
             await queue.mark_classified(
                 item=item,
             )
-            logger.info(f"document {res.document_id} classified")
+            logger.info(f"document {res.document_id} classified as {res.label}")
         else:
             await queue.mark_classification_failed(item_id=res.item_id, error=res.error)
             logger.info(f"classification failed for {res.document_id}, error: {res.error}")

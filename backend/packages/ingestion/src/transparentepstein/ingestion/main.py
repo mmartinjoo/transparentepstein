@@ -4,6 +4,8 @@ import asyncio
 from transparentepstein.ingestion import scraper, stages, selectors, services
 from transparentepstein.core.db import close_apool
 from transparentepstein.core.logging import setup_logging
+from transparentepstein.classification import create_classifier
+from transparentepstein.classification.classifier.base import ClassifierType
 
 async def async_main():
     try:

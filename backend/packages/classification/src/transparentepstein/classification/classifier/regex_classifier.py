@@ -14,7 +14,18 @@ class RegexClassifier(Classifier):
         return ClassificationLabel.UNKNOWN
     
     def match_email(self, content: str) -> bool:
-        return content.find("From:") != -1 and content.find("To:") != -1 and content.find("Subject:") != -1
+        def has_subject():
+            return content.find("Subject:") != -1 or content.find("Subject Re:") != -1 or content.find("Subject") != -1
+        
+        def has_from():
+            # sometimes From is misread to Fran
+            return content.find("From:") != -1 or content.find("Fran:") != -1
+            
+        
+        if has_from() and content.find("To:") != -1 and has_subject():
+            return True
+
+        return False        
 
     def match_court_doc(self, content: str) -> bool:
         court_document_matchers = [
