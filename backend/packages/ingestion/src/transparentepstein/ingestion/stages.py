@@ -1,4 +1,5 @@
 import logging
+from pprint import pprint
 
 from transparentepstein.ingestion import selectors, scraper, queue, tasks
 
@@ -27,11 +28,13 @@ async def discover_stage():
     
 async def fetch_stage():
     items = await queue.dequeue_for_fetch()
-    logger.info(f"fetchin {len(items)} URLs")
+    logger.info(f"fetching {len(items)} URLs")
     batch_size = len(items) // 5
-    print(f"batch size {batch_size}")
     for i in range(5):
         start = i * batch_size
         batch = items[start:start + batch_size]
         ids = [item.id for item in batch]
-        tasks.fetch.delay(ids)
+        res = tasks.fetch.delay(ids)
+        values: list[dict] = res.get()
+        fetch_results: list[tasks.FetchResult] = [tasks.FetchResult(**v) for v in values]
+        pprint(fetch_results)

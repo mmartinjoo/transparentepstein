@@ -1,6 +1,8 @@
 import asyncio
+from dataclasses import dataclass, asdict
 import logging
 import aiohttp
+import traceback
 from celery import Celery
 
 from transparentepstein.core.config import settings
@@ -27,6 +29,14 @@ HEADERS = {
 
 MAX_CONCURRENT_FETCHES = 8
 
+@dataclass
+class FetchResult():
+    item_id: int
+    url: str
+    ok: bool
+    s3_key: str | None = None
+    error: str | None = None
+
 @app.task
 def fetch(item_ids: list[int]):
     return asyncio.run(async_fetch(item_ids))
@@ -40,40 +50,46 @@ async def async_fetch(item_ids: list[int]):
     timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
     
     async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
-        results = await asyncio.gather(
-            *[fetch_one(session, semaphore, item.url, item.data_set_id) for item in items]
+        results: list[FetchResult] = await asyncio.gather(
+            *[fetch_one(session, semaphore, item) for item in items]
         )
-        
-        ok = [r for r in results if r["ok"]]
-        failed = [r for r in results if not r["ok"]]
-        logger.info(f"fetched {len(results)} URLs. Succeeded: {len(ok)}, failed: {len(failed)}")
-        return {
-            "total": len(results),
-            "ok": len(ok),
-            "failed": len(failed),
-        }
+        return results
     
 async def fetch_one(
     session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
-    url: str,
-    data_set_id: int,
+    item: queue.Item,
 ):
     async with semaphore:
         try:
-            parts = url.split("/")
+            parts = item.url.split("/")
             filename = parts[-1]            
-            async with session.get(url) as response:
+            async with session.get(item.url) as response:
                 if response.status != 200:
-                    return {"ok": False, "url": url, "error": f"{response.status}"}
+                    return asdict(FetchResult(
+                        item_id=item.id,
+                        url=item.url,
+                        ok=False,
+                        error=f"HTTP error: {response.status}"
+                    ))
 
                 data = await response.read()
                 
-            data_set = await selectors.find_data_set(data_set_id=data_set_id)
+            data_set = await selectors.find_data_set(data_set_id=item.data_set_id)
             key = await asyncio.to_thread(storage.put_file, data_set.name, filename, data)
-            logger.info(f"saved {len(data)} bytes to {key}")
-            return {"ok": True, "url": url, "key": key}
+            logger.info(f"saved {len(data)} bytes to \"{key}\"")
+            return asdict(FetchResult(
+                item_id=item.id,
+                url=item.url,
+                ok=True,
+                s3_key=key,
+            ))
             
         except Exception as exc:
-            logger.info(f"fetch failed for {url} with error: {exc}")
-            return {"ok": False, "url": url, "error": repr(exc)}
+            logger.info(f"fetch failed for {item.url} with error: {exc}")
+            return asdict(FetchResult(
+                item_id=item.id,
+                url=item.url,
+                ok=False,
+                error=traceback.format_exc(exc)
+            ))

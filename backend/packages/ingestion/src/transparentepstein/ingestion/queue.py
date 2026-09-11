@@ -7,7 +7,7 @@ from psycopg.rows import class_row
 from transparentepstein.core import db
 
 MAX_ATTEMPTS = 10
-FETCH_LIMIT = 100
+FETCH_LIMIT = 20
 
 @dataclass
 class Item():
