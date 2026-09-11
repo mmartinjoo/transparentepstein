@@ -11,7 +11,7 @@ class NothingToDiscoverError(Exception):
     pass
 
 async def discover_stage():
-    data_set = await selectors.find_data_set(data_set_id=1)
+    data_set = await selectors.find_data_set(data_set_id=13)
     next_page = data_set.processed_until_page + 1
     if next_page >= data_set.max_pages:
         logger.info(f"data set {data_set.id} has been fully processed")

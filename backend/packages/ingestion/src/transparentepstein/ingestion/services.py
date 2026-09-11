@@ -1,7 +1,7 @@
 import asyncio
+from typing import TypeAlias
 from pprint import pprint
 import pymupdf
-
 from psycopg.rows import class_row
 
 from transparentepstein.core import db, storage
@@ -49,3 +49,18 @@ def _load_pages(doc) -> str:
         text = page.get_text()
         content += "\n" + text
     return content
+
+TokenCount: TypeAlias = int
+
+def chunk_text(text: str, size: TokenCount = 512, overlap: TokenCount = 50) -> list[str]:
+    # 3.84 letter = 1 token
+    token_to_letter = 3.84
+    
+    size_in_char = int(size * token_to_letter)
+    overlap_in_char = int(overlap * token_to_letter)
+    step_in_char = int(size_in_char - overlap_in_char)
+    
+    return [
+        text[i:i + size_in_char]
+        for i in range(0, len(text), step_in_char)
+    ]
