@@ -69,6 +69,7 @@ async def insert(
     query: str,
     inputs: list,
     row_factory = None,
+    returning: bool = False,
 ):
     if row_factory is None:
         row_factory = dict_row
@@ -78,8 +79,8 @@ async def insert(
         async with conn.cursor(row_factory=row_factory) as cur:
             await cur.execute(query, inputs)
             await conn.commit()
-            res = await cur.fetchone()
-    return res
+            if returning:
+                return await cur.fetchone()
             
 async def update(
     query: str,

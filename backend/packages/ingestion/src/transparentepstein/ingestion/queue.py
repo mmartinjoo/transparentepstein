@@ -10,6 +10,7 @@ from transparentepstein.ingestion.models import Document
 MAX_ATTEMPTS = 10
 FETCH_LIMIT = 100
 LOAD_LIMIT = 200
+CHUNK_LIMIT = 500
 
 @dataclass
 class Item():
@@ -72,7 +73,7 @@ async def dequeue_for_fetch() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def dequeue_for_check_fetch() -> list[Item]:
+async def dequeue_for_waiting_for_load() -> list[Item]:
     pool = await db.apool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=class_row(Item)) as cur:
@@ -111,6 +112,50 @@ async def dequeue_for_load() -> list[Item]:
                 Status.LOAD_FAILED.name,
                 MAX_ATTEMPTS,
                 LOAD_LIMIT,
+            ])
+            return await cur.fetchall()
+        
+async def dequeue_for_waiting_for_chunk() -> list[Item]:
+    pool = await db.apool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=class_row(Item)) as cur:
+            await cur.execute("""
+                select *
+                from ops.ingestion_queue
+                where fetched = true
+                and loaded = true
+                and status = %s
+                and attempts <= %s
+                and next_attempt_at <= now()                
+                order by created_at asc
+                for update skip locked
+            """, [
+                Status.LOADED.name,
+                MAX_ATTEMPTS,
+            ])
+            return await cur.fetchall()
+        
+async def dequeue_for_chunk() -> list[Item]:
+    pool = await db.apool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=class_row(Item)) as cur:
+            await cur.execute("""
+                select *
+                from ops.ingestion_queue
+                where fetched = true
+                and loaded = true
+                and chunked = false
+                and status in (%s, %s)
+                and attempts <= %s
+                and next_attempt_at <= now()                
+                order by created_at asc
+                limit %s
+                for update skip locked
+            """, [
+                Status.WAITING_FOR_CHUNK.name,
+                Status.CHUNK_FAILED.name,
+                MAX_ATTEMPTS,
+                CHUNK_LIMIT,
             ])
             return await cur.fetchall()
         
@@ -196,6 +241,7 @@ async def mark_fetch_failed(item: Item, error: str):
                 status = %s,
                 error = %s,
                 next_attempt_at = now() + interval '1 hour',
+                fetched = false,
                 updated_at = now()
             where id = %s
         """,
@@ -284,12 +330,102 @@ async def mark_load_failed(item: Item, error: str):
                 status = %s,
                 error = %s,
                 next_attempt_at = now() + interval '1 hour',
+                loaded = false,
                 updated_at = now()
             where id = %s
         """,
         inputs=[
             Status.LOAD_FAILED.name,
             error,
+            item.id,
+        ]
+    )
+    
+async def mark_waiting_for_chunk(
+    item: Item
+):
+    assert item is not None
+    
+    guard_transition(item=item, to_status=Status.WAITING_FOR_CHUNK)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                loaded = true,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.WAITING_FOR_CHUNK.name,
+            item.id,
+        ]
+    )
+    
+async def mark_chunking(
+    items: list[Item]
+):
+    assert len(items) != 0
+    
+    for item in items:
+        guard_transition(item=item, to_status=Status.CHUNKING)
+    
+    in_clause = ','.join(['%s'] * len(items))
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                attempts = attempts + 1,
+                updated_at = now()
+            where id in ({in_clause})
+        """,
+        inputs=[
+            Status.CHUNKING.name,
+            *[item.id for item in items],
+        ]
+    )
+    
+async def mark_chunk_failed(item: Item, error: str):
+    guard_transition(item=item, to_status=Status.CHUNK_FAILED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                error = %s,
+                next_attempt_at = now() + interval '1 hour',
+                chunked = false
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.CHUNK_FAILED.name,
+            error,
+            item.id,
+        ]
+    )
+    
+async def mark_chunked(
+    item: Item, 
+):
+    assert item is not None
+    
+    guard_transition(item=item, to_status=Status.CHUNKED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                chunked = true,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.CHUNKED.name,
             item.id,
         ]
     )

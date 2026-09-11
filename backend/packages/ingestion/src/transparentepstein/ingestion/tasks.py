@@ -1,5 +1,5 @@
 import asyncio
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import logging
 import aiohttp
 import traceback
@@ -45,6 +45,14 @@ class LoadResult():
     ok: bool
     content: str | None = None    
     error: str | None = None
+    
+@dataclass
+class ChunkResult():
+    document_id: int
+    item_id: int
+    ok: bool
+    chunks: list[str] = field(default_factory=lambda: [])
+    error: str | None = None
 
 @app.task
 def fetch(item_ids: list[int]):
@@ -53,6 +61,10 @@ def fetch(item_ids: list[int]):
 @app.task
 def load(item_ids: list[int]):
     return asyncio.run(async_load(item_ids))
+
+@app.task
+def chunk(item_ids: list[int]):
+    return asyncio.run(async_chunk(item_ids))
 
 async def async_fetch(item_ids: list[int]) -> list[FetchResult]:
     items = await queue.find_items(item_ids=item_ids)
@@ -133,6 +145,38 @@ async def load_one(document: Document, item_id: int) -> dict:
             document_id=document.id,
             item_id=item_id,
             content=None,
+            ok=False,
+            error=traceback.format_exc(exc),
+        ))
+        
+async def async_chunk(item_ids: list[int]) -> list[dict]:
+    coros = []
+    for id in item_ids:
+        item = await queue.find_item(id=id)
+        assert item.document_id is not None
+        
+        document = await selectors.find_document(id=item.document_id)
+        coros.append(chunk_one(document, item.id))
+        
+    return await asyncio.gather(*coros)
+
+async def chunk_one(document: Document, item_id: int) -> dict:
+    try:
+        if document.content is None:
+            raise ValueError(f"conent is None for document {document.id}")
+        
+        chunks = await asyncio.to_thread(services.chunk_text, text=document.content)
+        return asdict(ChunkResult(
+            document_id=document.id,
+            item_id=item_id,
+            chunks=chunks,
+            ok=True,
+        ))
+    except Exception as exc:
+        return asdict(ChunkResult(
+            document_id=document.id,
+            item_id=item_id,
+            chunks=[],
             ok=False,
             error=traceback.format_exc(exc),
         ))

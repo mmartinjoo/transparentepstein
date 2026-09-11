@@ -65,7 +65,7 @@ async def fetch_stage():
             logger.error(f"fetch failed at {res.url}, error: {res.error}")
             
 async def move_to_load_stage():
-    items = await queue.dequeue_for_check_fetch()
+    items = await queue.dequeue_for_waiting_for_load()
     for item in items:
         document = await selectors.find_document(id=item.document_id)
 
@@ -87,7 +87,7 @@ async def move_to_load_stage():
 async def load_stage():
     items = await queue.dequeue_for_load()
     batch_size = len(items) // 5
-    results = []
+    results: list[tasks.LoadResult] = []
     
     for i in range(5):
         start = i * batch_size
@@ -117,3 +117,50 @@ async def load_stage():
         else:
             await queue.mark_load_failed(item_id=res.item_id, error=res.error)
             logger.info(f"load failed for {res.document_id}, error: {res.error}")
+            
+async def move_to_chunk_stage():
+    items = await queue.dequeue_for_waiting_for_chunk()
+    for item in items:
+        document = await selectors.find_document(id=item.document_id)
+
+        if document.content is None or len(document.content) == 0:
+            await queue.mark_load_failed(item=item, error=f"content is empty for {document.id}")
+            logger.error(f"item {item.id} marked as failed: content is empty")
+            continue
+            
+        await queue.mark_waiting_for_chunk(item=item)
+        logger.info(f"item {item.id} marked as waiting for chunk")            
+
+async def chunk_stage():
+    items = await queue.dequeue_for_chunk()
+    batch_size = len(items) // 5
+    results: list[tasks.ChunkResult] = []
+    
+    for i in range(5):
+        start = i * batch_size
+        batch = items[start:start + batch_size]
+        
+        await queue.mark_chunking(items=batch)
+        
+        task_result = tasks.chunk.delay([item.id for item in batch])
+                
+        load_results: list[tasks.ChunkResult] = [tasks.ChunkResult(**v) for v in task_result.get()]
+        for r in load_results:
+            results.append(r)
+    
+    for res in results:
+        if res.ok:
+            if len(res.chunks) == 0:
+                await queue.mark_chunk_failed(item_id=res.item_id, error="empty chunks")
+                logger.info(f"chunk failed for {res.document_id}, error: empty chunks")
+                continue
+            
+            item = await queue.find_item(id=res.item_id)
+            await services.create_document_chunks(document_id=res.document_id, chunks=res.chunks)
+            await queue.mark_chunked(
+                item=item, 
+            )
+            logger.info(f"document {res.document_id} chunked")
+        else:
+            await queue.mark_chunk_failed(item_id=res.item_id, error=res.error)
+            logger.info(f"chunk failed for {res.document_id}, error: {res.error}")

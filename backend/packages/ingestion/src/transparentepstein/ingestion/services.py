@@ -20,6 +20,7 @@ async def create_document(url: str, s3_key: str, data_set_id: int) -> Document:
             data_set_id,
         ],
         row_factory=class_row(Document),
+        returning=True,
     )
 
 async def load_document_content(document: Document) -> str:
@@ -42,6 +43,22 @@ async def update_document_content(document_id: int, content: str):
             document_id,
         ],
     )
+    
+async def create_document_chunks(document_id: int, chunks: list[str]):
+    assert len(chunks) != 0
+    
+    for idx, chunk in enumerate(chunks):
+        await db.insert(
+            query="""
+                insert into ops.document_chunks(document_id, position, content, created_at)
+                values(%s, %s, %s, now())
+            """,
+            inputs=[
+                document_id,
+                idx,
+                chunk,
+            ]
+        )
 
 def _load_pages(doc) -> str:
     content: str = ""
