@@ -5,6 +5,8 @@ from pprint import pprint
 from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, scraper, queue, tasks, services
 from transparentepstein.core import storage
+from transparentepstein.classification.tasks import classify as classify_task
+from transparentepstein.classification.tasks import ClassificationResult
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +182,7 @@ async def move_to_classification_stage():
 async def classification_stage():
     items = await queue.dequeue_for_classification()
     batch_size = len(items) // 5
-    results: list[tasks.ClassificationResult] = []
+    results: list[ClassificationResult] = []
     
     for i in range(5):
         start = i * batch_size
@@ -188,9 +190,12 @@ async def classification_stage():
         
         await queue.mark_classifying(items=batch)
         
-        task_result = tasks.classify.delay([item.id for item in batch])
+        item_ids = [item.id for item in batch]
+        document_ids = [item.document_id for item in batch]
+        
+        task_result = classify_task.delay(item_ids, document_ids)
                 
-        load_results: list[tasks.ClassificationResult] = [tasks.ClassificationResult(**v) for v in task_result.get()]
+        load_results: list[ClassificationResult] = [ClassificationResult(**v) for v in task_result.get()]
         for r in load_results:
             results.append(r)
     

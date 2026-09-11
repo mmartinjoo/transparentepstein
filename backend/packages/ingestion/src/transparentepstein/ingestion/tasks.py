@@ -3,16 +3,12 @@ from dataclasses import dataclass, asdict, field
 import logging
 import aiohttp
 import traceback
-from celery import Celery
 
-from transparentepstein.core.config import settings
-from transparentepstein.core import storage
+from transparentepstein.core import storage, celery
 from transparentepstein.ingestion import queue, selectors, services
 from transparentepstein.ingestion.models import Document
 from transparentepstein.classification import create_classifier
 from transparentepstein.classification.classifier.base import ClassificationLabel, ClassifierType
-
-app = Celery("tasks", broker=settings.redis_url, backend=settings.redis_url)
 
 logger = logging.getLogger(__name__)
 
@@ -55,30 +51,18 @@ class ChunkResult():
     ok: bool
     chunks: list[str] = field(default_factory=lambda: [])
     error: str | None = None
-    
-@dataclass
-class ClassificationResult():
-    document_id: int
-    item_id: int
-    ok: bool
-    label: str | None = None
-    error: str | None = None
 
-@app.task
+@celery.app.task
 def fetch(item_ids: list[int]):
     return asyncio.run(async_fetch(item_ids))
 
-@app.task
+@celery.app.task
 def load(item_ids: list[int]):
     return asyncio.run(async_load(item_ids))
 
-@app.task
+@celery.app.task
 def chunk(item_ids: list[int]):
     return asyncio.run(async_chunk(item_ids))
-
-@app.task
-def classify(item_ids: list[int]):
-    return asyncio.run(async_classify(item_ids))
 
 async def async_fetch(item_ids: list[int]) -> list[FetchResult]:
     items = await queue.find_items(item_ids=item_ids)
@@ -190,39 +174,3 @@ async def chunk_one(document: Document, item_id: int) -> dict:
             error=traceback.format_exc(exc),
         ))
         
-async def async_classify(item_ids: list[int]) -> list[dict]:
-    coros = []
-    for id in item_ids:
-        item = await queue.find_item(id=id)
-        document = await selectors.find_document(id=item.document_id)
-        
-        coros.append(classify_one(document, item.id))
-        
-    return await asyncio.gather(*coros)
-
-async def classify_one(document: Document, item_id: int) -> dict:
-    try:
-        if document.content is None or len(document.content) == 0:
-            raise ValueError(f"content is None for document {document.id}")
-        
-        # it's a simple regex classifier so the :500 makes sure that those keywords don't just randomly come up in a long document and gets classified as EMAIL
-        classifier = create_classifier(type=ClassifierType.REGEX)
-        label: ClassificationLabel = classifier.classify(content=document.content[:500])
-        
-        if label is None:
-            raise ValueError("classifier returned None")
-        
-        return asdict(ClassificationResult(
-            document_id=document.id,
-            item_id=item_id,
-            label=label.name,
-            ok=True,
-        ))
-    except Exception as exc:
-        return asdict(ChunkResult(
-            document_id=document.id,
-            item_id=item_id,
-            label=None,
-            ok=False,
-            error=traceback.format_exc(exc),
-        ))

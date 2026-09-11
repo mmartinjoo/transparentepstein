@@ -11,6 +11,7 @@ members = [
     "transparentepstein-classification",
     "transparentepstein-core",
     "transparentepstein-ingestion",
+    "transparentepstein-worker",
 ]
 
 [manifest.dependency-groups]
@@ -1764,6 +1765,17 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.17.0" },
     { name = "transparentepstein-core", editable = "packages/core" },
 ]
+
+[[package]]
+name = "transparentepstein-worker"
+version = "0.1.0"
+source = { editable = "packages/worker" }
+dependencies = [
+    { name = "transparentepstein-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "transparentepstein-core", editable = "packages/core" }]
 
 [[package]]
 name = "typer"

@@ -30,6 +30,20 @@ async def find_document(id: int) -> Document:
         row_factory=class_row(Document),
     )
     
+async def fetch_document_content(id: int) -> str:
+    assert id is not None
+        
+    res = await db.select_one(
+        query="""
+            select content
+            from ops.documents                   
+            where id = %s
+            limit 1
+        """,
+        inputs=[id],
+    )
+    return res["content"]
+    
 async def count_document_chunks_by_document(document_id: int) -> int:
     assert document_id is not None
         
