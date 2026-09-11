@@ -7,7 +7,8 @@ from celery import Celery
 
 from transparentepstein.core.config import settings
 from transparentepstein.core import storage
-from transparentepstein.ingestion import queue, selectors
+from transparentepstein.ingestion import queue, selectors, services
+from transparentepstein.ingestion.models import Document
 
 app = Celery("tasks", broker=settings.redis_url, backend=settings.redis_url)
 
@@ -36,12 +37,24 @@ class FetchResult():
     ok: bool
     s3_key: str | None = None
     error: str | None = None
+    
+@dataclass
+class LoadResult():
+    document_id: int
+    item_id: int
+    ok: bool
+    content: str | None = None    
+    error: str | None = None
 
 @app.task
 def fetch(item_ids: list[int]):
     return asyncio.run(async_fetch(item_ids))
 
-async def async_fetch(item_ids: list[int]):
+@app.task
+def load(item_ids: list[int]):
+    return asyncio.run(async_load(item_ids))
+
+async def async_fetch(item_ids: list[int]) -> list[FetchResult]:
     items = await queue.find_items(item_ids=item_ids)
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
@@ -59,7 +72,7 @@ async def fetch_one(
     session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
     item: queue.Item,
-):
+) -> dict:
     async with semaphore:
         try:
             parts = item.url.split("/")
@@ -93,3 +106,33 @@ async def fetch_one(
                 ok=False,
                 error=traceback.format_exc(exc)
             ))
+            
+async def async_load(item_ids: list[int]) -> list[dict]:
+    coros = []
+    for id in item_ids:
+        item = await queue.find_item(id=id)
+        
+        assert item.document_id is not None
+        
+        document = await selectors.find_document(id=item.document_id)
+        coros.append(load_one(document, item.id))
+        
+    return await asyncio.gather(*coros)
+
+async def load_one(document: Document, item_id: int) -> dict:
+    try:
+        content = await services.load_document_content(document=document)
+        return asdict(LoadResult(
+            document_id=document.id,
+            item_id=item_id,
+            content=content,
+            ok=True,
+        ))
+    except Exception as exc:
+        return asdict(LoadResult(
+            document_id=document.id,
+            item_id=item_id,
+            content=None,
+            ok=False,
+            error=traceback.format_exc(exc),
+        ))

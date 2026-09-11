@@ -15,6 +15,7 @@ class DataSet():
 class Document():
     id: int
     url: str
+    content: str
     s3_key: str
     data_set_id: int
     created_at: datetime

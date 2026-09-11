@@ -8,7 +8,9 @@ from transparentepstein.core.logging import setup_logging
 async def async_main():
     try:
         setup_logging()
-        await stages.fetch_stage()
+        # await stages.fetch_stage()
+        # await stages.move_to_load_stage()
+        await stages.load_stage()
     finally:
         await close_apool()
     

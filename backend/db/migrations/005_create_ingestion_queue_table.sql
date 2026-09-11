@@ -3,6 +3,7 @@ create table if not exists ops.ingestion_queue(
     data_set_id int not null references ops.data_sets(id),
     url text not null unique,
     fetched boolean not null default false,
+    loaded boolean not null default false,
     chunked boolean not null default false,
     classified boolean not null default false,
     embedded boolean not null default false,

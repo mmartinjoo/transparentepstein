@@ -9,6 +9,7 @@ from transparentepstein.ingestion.models import Document
 
 MAX_ATTEMPTS = 10
 FETCH_LIMIT = 100
+LOAD_LIMIT = 200
 
 @dataclass
 class Item():
@@ -16,6 +17,7 @@ class Item():
     url: str
     data_set_id: int
     fetched: bool
+    loaded: bool
     chunked: bool
     classified: bool
     embedded: bool
@@ -67,6 +69,48 @@ async def dequeue_for_fetch() -> list[Item]:
                 Status.FETCH_FAILED.name,
                 MAX_ATTEMPTS,
                 FETCH_LIMIT,
+            ])
+            return await cur.fetchall()
+        
+async def dequeue_for_check_fetch() -> list[Item]:
+    pool = await db.apool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=class_row(Item)) as cur:
+            await cur.execute("""
+                select *
+                from ops.ingestion_queue
+                where fetched = true
+                and status = %s
+                and attempts <= %s
+                and next_attempt_at <= now()                
+                order by created_at asc
+                for update skip locked
+            """, [
+                Status.FETCHED.name,
+                MAX_ATTEMPTS,
+            ])
+            return await cur.fetchall()
+        
+async def dequeue_for_load() -> list[Item]:
+    pool = await db.apool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=class_row(Item)) as cur:
+            await cur.execute("""
+                select *
+                from ops.ingestion_queue
+                where fetched = true
+                and loaded = false
+                and status in (%s, %s)
+                and attempts <= %s
+                and next_attempt_at <= now()                
+                order by created_at asc
+                limit %s
+                for update skip locked
+            """, [
+                Status.WAITING_FOR_LOAD.name,
+                Status.LOAD_FAILED.name,
+                MAX_ATTEMPTS,
+                LOAD_LIMIT,
             ])
             return await cur.fetchall()
         
@@ -162,15 +206,109 @@ async def mark_fetch_failed(item: Item, error: str):
         ]
     )
     
+async def mark_waiting_for_load(
+    item: Item
+):
+    assert item is not None
+    
+    guard_transition(item=item, to_status=Status.WAITING_FOR_LOAD)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                fetched = true,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.WAITING_FOR_LOAD.name,
+            item.id,
+        ]
+    )
+    
+async def mark_loading(
+    items: list[Item]
+):
+    assert len(items) != 0
+    
+    for item in items:
+        guard_transition(item=item, to_status=Status.LOADING)
+    
+    in_clause = ','.join(['%s'] * len(items))
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                attempts = attempts + 1,
+                updated_at = now()
+            where id in ({in_clause})
+        """,
+        inputs=[
+            Status.LOADING.name,
+            *[item.id for item in items],
+        ]
+    )
+    
+async def mark_loaded(
+    item: Item, 
+):
+    assert item is not None
+    
+    guard_transition(item=item, to_status=Status.LOADED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                loaded = true,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.LOADED.name,
+            item.id,
+        ]
+    )
+    
+async def mark_load_failed(item: Item, error: str):
+    guard_transition(item=item, to_status=Status.LOAD_FAILED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                error = %s,
+                next_attempt_at = now() + interval '1 hour',
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.LOAD_FAILED.name,
+            error,
+            item.id,
+        ]
+    )
+    
 class Status(Enum):
     WAITING_FOR_FETCH = "waiting_for_fetch"
     FETCHING = "fetching"
     FETCHED = "fetched"
     FETCH_FAILED = "fetch_failed"
     
+    WAITING_FOR_LOAD = "waiting_for_load"
+    LOADING = "loading"
+    LOADED = "loaded"
+    LOAD_FAILED = "load_failed"
+    
     WAITING_FOR_CHUNK = "waiting_for_chunk"
     CHUNKING = "chunking"
     CHUNKED = "chunked"
+    CHUNK_FAILED = "chunk_failed"
     
     WAITING_FOR_CLASSIFICATION = "waiting_for_classification"
     CLASSIFYING = "classifying"
@@ -207,8 +345,29 @@ def guard_transition(
             "criteria": lambda ip: ip.fetched == False,
         },        
         Status.FETCHED: {
-            "to_status": Status.WAITING_FOR_CHUNK,
+            "to_status": Status.WAITING_FOR_LOAD,
             "criteria": lambda ip: ip.fetched == True and ip.chunked == False and ip.document_id is not None,
+        },
+        
+        Status.WAITING_FOR_LOAD: {
+            "to_status": Status.LOADING,
+            "criteria": lambda ip: ip.fetched == True and ip.loaded == False,
+        },
+        Status.LOADING: {
+            "to_status": Status.LOAD_FAILED,
+            "criteria": lambda ip: ip.fetched == True and ip.loaded == False,
+        },
+        Status.LOAD_FAILED: {
+            "to_status": Status.LOADING,
+            "criteria": lambda ip: ip.fetched == True and ip.loaded == False,
+        },
+        Status.LOADING: {
+            "to_status": Status.LOADED,
+            "criteria": lambda ip: ip.fetched == True and ip.loaded == False,
+        },        
+        Status.LOADED: {
+            "to_status": Status.WAITING_FOR_CHUNK,
+            "criteria": lambda ip: ip.fetched == True and ip.loaded == True and ip.chunked == False and ip.document_id is not None,
         },
         
         Status.WAITING_FOR_CHUNK: {

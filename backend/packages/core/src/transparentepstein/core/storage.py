@@ -46,3 +46,24 @@ def get_file(key: str) -> bytes:
     )
     
     return resp["Body"].read()
+
+def exists(key: str) -> bool:
+    try:
+        s3.head_object(
+            Bucket=settings.s3_bucket,
+            Key=key,
+        )
+        return True
+    except Exception:
+        return False
+    
+def empty(key: str) -> bool:
+    if not exists(key=key):
+        return True
+    
+    resp = s3.head_object(
+        Bucket=settings.s3_bucket,
+        Key=key,
+    )
+    
+    return resp["ContentLength"] == 0
