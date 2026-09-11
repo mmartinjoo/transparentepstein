@@ -4,7 +4,6 @@ from pprint import pprint
 import pymupdf
 from psycopg.rows import class_row
 
-from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.core import db, storage
 from transparentepstein.ingestion.models import Document
 
@@ -41,21 +40,6 @@ async def update_document_content(document_id: int, content: str):
         """,
         inputs=[
             content,
-            document_id,
-        ],
-    )
-    
-async def update_document_main_classification_label(document_id: int, label: ClassificationLabel):
-    await db.update(
-        query="""
-            update ops.documents
-            set 
-                main_classification_label = %s,
-                updated_at = now()
-            where id = %s
-        """,
-        inputs=[
-            label.name,
             document_id,
         ],
     )

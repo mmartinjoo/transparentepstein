@@ -4,6 +4,7 @@ from pprint import pprint
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, scraper, queue, tasks, services
+from transparentepstein.classification import services as classification_services
 from transparentepstein.core import storage
 from transparentepstein.classification.tasks import classify as classify_task
 from transparentepstein.classification.tasks import ClassificationResult
@@ -213,7 +214,7 @@ async def classification_stage():
             label = ClassificationLabel[res.label]
             
             item = await queue.find_item(id=res.item_id)
-            await services.update_document_main_classification_label(document_id=res.document_id, label=label)
+            await classification_services.update_document_main_classification_label(document_id=res.document_id, label=label)
             await queue.mark_classified(
                 item=item,
             )
