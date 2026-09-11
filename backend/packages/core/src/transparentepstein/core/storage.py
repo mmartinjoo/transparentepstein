@@ -14,7 +14,7 @@ try:
 except Exception:
     s3.create_bucket(Bucket=settings.s3_bucket)
     
-def put_file(data_set_name: str, doc_name: str, data: bytes):
+def put_file(data_set_name: str, doc_name: str, data: bytes) -> str:
     key = f"{data_set_name}/{doc_name}"
     
     if doc_name.endswith(".pdf"):
@@ -36,6 +36,8 @@ def put_file(data_set_name: str, doc_name: str, data: bytes):
         Body=data,
         ContentType=content_type,
     )
+    
+    return key
 
 def get_file(key: str) -> bytes:
     resp = s3.get_object(
