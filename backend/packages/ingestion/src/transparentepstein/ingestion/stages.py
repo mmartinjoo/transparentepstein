@@ -1,7 +1,7 @@
 import logging
 from pprint import pprint
 
-from transparentepstein.ingestion import selectors, scraper, queue, tasks
+from transparentepstein.ingestion import selectors, scraper, queue, tasks, services
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +29,36 @@ async def discover_stage():
 async def fetch_stage():
     items = await queue.dequeue_for_fetch()
     logger.info(f"fetching {len(items)} URLs")
+    
     batch_size = len(items) // 5
+    results: list[tasks.FetchResult] = []
+    
     for i in range(5):
         start = i * batch_size
-        batch = items[start:start + batch_size]
-        ids = [item.id for item in batch]
-        res = tasks.fetch.delay(ids)
-        values: list[dict] = res.get()
-        fetch_results: list[tasks.FetchResult] = [tasks.FetchResult(**v) for v in values]
-        pprint(fetch_results)
+        batch = items[start:start + batch_size]        
+        
+        await queue.mark_fetching(items=batch)
+        
+        task_result = tasks.fetch.delay([item.id for item in batch])
+        
+        fetch_results: list[tasks.FetchResult] = [tasks.FetchResult(**v) for v in task_result.get()]
+        for r in fetch_results:
+            results.append(r)
+        
+    for res in results:
+        if res.ok:
+            # TODO: transaction
+            item = await queue.find_item(id=res.item_id)
+            document = await services.create_document(
+                url=res.url,
+                s3_key=res.s3_key,
+                data_set_id=item.data_set_id,
+            )
+            await queue.mark_fetched(
+                item=item, 
+                document=document,
+            )
+            logger.info(f"document {document.id} fetched from {document.url}")
+        else:
+            await queue.mark_fetch_failed(item_id=res.item_id, error=res.error)
+            logger.info(f"fetch failed at {res.url}, error: {res.error}")

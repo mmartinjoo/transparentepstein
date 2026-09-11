@@ -1,10 +1,8 @@
 create table if not exists ops.documents(
     id serial primary key,
-    external_id text not null,
     url text not null,
-    source text not null,
-    data_set text default null,
-    s3_key text,
+    data_set_id int not null references ops.data_sets(id),
+    s3_key text not null,
     created_at timestamptz default now(),
     updated_at timestamptz default null
 )

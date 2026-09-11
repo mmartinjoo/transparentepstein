@@ -68,12 +68,18 @@ async def select_one(
 async def insert(
     query: str,
     inputs: list,
+    row_factory = None,
 ):
+    if row_factory is None:
+        row_factory = dict_row
+        
     pool = await apool()
     async with pool.connection() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(row_factory=row_factory) as cur:
             await cur.execute(query, inputs)
             await conn.commit()
+            res = await cur.fetchone()
+    return res
             
 async def update(
     query: str,

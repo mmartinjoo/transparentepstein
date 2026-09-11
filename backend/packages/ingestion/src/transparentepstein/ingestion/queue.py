@@ -5,9 +5,10 @@ from enum import Enum
 from psycopg.rows import class_row
 
 from transparentepstein.core import db
+from transparentepstein.ingestion.models import Document
 
 MAX_ATTEMPTS = 10
-FETCH_LIMIT = 20
+FETCH_LIMIT = 100
 
 @dataclass
 class Item():
@@ -22,6 +23,7 @@ class Item():
     error: str
     attempts: int
     next_attempt_at: datetime
+    document_id: int
     created_at: datetime
     updated_at: datetime
     finished_at: datetime
@@ -80,6 +82,86 @@ async def find_items(item_ids: list[int]) -> list[Item]:
         row_factory=class_row(Item),
     )
     
+async def find_item(id: int) -> Item:
+    return await db.select_one(
+        query=f"""
+            select *
+            from ops.ingestion_queue                   
+            where id = %s
+        """,
+        inputs=[id],
+        row_factory=class_row(Item),
+    )
+    
+async def mark_fetching(
+    items: list[Item]
+):
+    assert len(items) != 0
+    
+    for item in items:
+        guard_transition(item=item, to_status=Status.FETCHING)
+    
+    in_clause = ','.join(['%s'] * len(items))
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                attempts = attempts + 1,
+                updated_at = now()
+            where id in ({in_clause})
+        """,
+        inputs=[
+            Status.FETCHING.name,
+            *[item.id for item in items],
+        ]
+    )
+    
+async def mark_fetched(
+    item: Item, 
+    document: Document,
+):
+    assert document is not None
+    
+    guard_transition(item=item, to_status=Status.FETCHED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                fetched = true,
+                document_id = %s,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.FETCHED.name,
+            document.id,
+            item.id,
+        ]
+    )
+
+async def mark_fetch_failed(item: Item, error: str):
+    guard_transition(item=item, to_status=Status.FETCH_FAILED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                error = %s,
+                next_attempt_at = now() + interval '1 hour',
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.FETCH_FAILED.name,
+            error,
+            item.id,
+        ]
+    )
+    
 class Status(Enum):
     WAITING_FOR_FETCH = "waiting_for_fetch"
     FETCHING = "fetching"
@@ -126,7 +208,7 @@ def guard_transition(
         },        
         Status.FETCHED: {
             "to_status": Status.WAITING_FOR_CHUNK,
-            "criteria": lambda ip: ip.fetched == True and ip.chunked == False,
+            "criteria": lambda ip: ip.fetched == True and ip.chunked == False and ip.document_id is not None,
         },
         
         Status.WAITING_FOR_CHUNK: {
