@@ -11,6 +11,7 @@ members = [
     "transparentepstein-classification",
     "transparentepstein-core",
     "transparentepstein-ingestion",
+    "transparentepstein-pipeline",
     "transparentepstein-worker",
 ]
 
@@ -1764,6 +1765,23 @@ requires-dist = [
     { name = "redis", specifier = ">=8.1.0" },
     { name = "transformers", specifier = ">=5.17.0" },
     { name = "transparentepstein-core", editable = "packages/core" },
+]
+
+[[package]]
+name = "transparentepstein-pipeline"
+version = "0.1.0"
+source = { editable = "packages/pipeline" }
+dependencies = [
+    { name = "transparentepstein-classification" },
+    { name = "transparentepstein-core" },
+    { name = "transparentepstein-ingestion" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "transparentepstein-classification", editable = "packages/classification" },
+    { name = "transparentepstein-core", editable = "packages/core" },
+    { name = "transparentepstein-ingestion", editable = "packages/ingestion" },
 ]
 
 [[package]]
