@@ -190,10 +190,14 @@ async def classification_stage():
         
         await queue.mark_classifying(items=batch)
         
-        item_ids = [item.id for item in batch]
-        document_ids = [item.document_id for item in batch]
+        context = {}
+        for item in batch:
+            context[item.id] = {
+                "document_id": item.document_id,
+                "document_content": await selectors.fetch_document_content(id=item.document_id),
+            }
         
-        task_result = classify_task.delay(item_ids, document_ids)
+        task_result = classify_task.delay(context)
                 
         load_results: list[ClassificationResult] = [ClassificationResult(**v) for v in task_result.get()]
         for r in load_results:

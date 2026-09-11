@@ -4,7 +4,6 @@ import logging
 import traceback
 
 from transparentepstein.core import celery
-from transparentepstein.ingestion import selectors
 from transparentepstein.classification import create_classifier
 from transparentepstein.classification.classifier.base import ClassificationLabel, ClassifierType
 
@@ -19,14 +18,21 @@ class ClassificationResult():
     error: str | None = None
 
 @celery.app.task
-def classify(item_ids: list[int], document_ids: list[int]):
-    return asyncio.run(async_classify(item_ids, document_ids))
+def classify(context: dict[str, dict[str, any]]):
+    return asyncio.run(async_classify(context))
 
-async def async_classify(item_ids: list[int], document_ids: list[int]) -> list[dict]:
+async def async_classify(context: dict) -> list[dict]:
     coros = []
-    for idx, id in enumerate(item_ids):
-        content = await selectors.fetch_document_content(id=document_ids[idx])
-        coros.append(classify_one(content, document_ids[idx], id))
+    for item_id in context.keys():
+        assert "document_id" in context[item_id]
+        assert "document_content" in context[item_id]
+        assert context[item_id]["document_id"] is not None
+        assert context[item_id]["document_content"] is not None
+        
+        document_id = context[item_id]["document_id"]
+        document_content = context[item_id]["document_content"]
+        
+        coros.append(classify_one(document_content, document_id, item_id))
         
     return await asyncio.gather(*coros)
 
