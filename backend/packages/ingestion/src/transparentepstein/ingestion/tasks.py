@@ -9,6 +9,8 @@ from transparentepstein.core.config import settings
 from transparentepstein.core import storage
 from transparentepstein.ingestion import queue, selectors, services
 from transparentepstein.ingestion.models import Document
+from transparentepstein.classification import create_classifier
+from transparentepstein.classification.classifier.base import ClassificationLabel, Classifier, ClassifierType
 
 app = Celery("tasks", broker=settings.redis_url, backend=settings.redis_url)
 
@@ -53,6 +55,14 @@ class ChunkResult():
     ok: bool
     chunks: list[str] = field(default_factory=lambda: [])
     error: str | None = None
+    
+@dataclass
+class ClassificationResult():
+    document_id: int
+    item_id: int
+    ok: bool
+    label: str | None = None
+    error: str | None = None
 
 @app.task
 def fetch(item_ids: list[int]):
@@ -65,6 +75,10 @@ def load(item_ids: list[int]):
 @app.task
 def chunk(item_ids: list[int]):
     return asyncio.run(async_chunk(item_ids))
+
+@app.task
+def classify(item_ids: list[int]):
+    return asyncio.run(async_classify(item_ids))
 
 async def async_fetch(item_ids: list[int]) -> list[FetchResult]:
     items = await queue.find_items(item_ids=item_ids)
@@ -123,9 +137,6 @@ async def async_load(item_ids: list[int]) -> list[dict]:
     coros = []
     for id in item_ids:
         item = await queue.find_item(id=id)
-        
-        assert item.document_id is not None
-        
         document = await selectors.find_document(id=item.document_id)
         coros.append(load_one(document, item.id))
         
@@ -153,8 +164,6 @@ async def async_chunk(item_ids: list[int]) -> list[dict]:
     coros = []
     for id in item_ids:
         item = await queue.find_item(id=id)
-        assert item.document_id is not None
-        
         document = await selectors.find_document(id=item.document_id)
         coros.append(chunk_one(document, item.id))
         
@@ -162,8 +171,8 @@ async def async_chunk(item_ids: list[int]) -> list[dict]:
 
 async def chunk_one(document: Document, item_id: int) -> dict:
     try:
-        if document.content is None:
-            raise ValueError(f"conent is None for document {document.id}")
+        if document.content is None or len(document.content) == 0:
+            raise ValueError(f"content is None for document {document.id}")
         
         chunks = await asyncio.to_thread(services.chunk_text, text=document.content)
         return asdict(ChunkResult(
@@ -177,6 +186,42 @@ async def chunk_one(document: Document, item_id: int) -> dict:
             document_id=document.id,
             item_id=item_id,
             chunks=[],
+            ok=False,
+            error=traceback.format_exc(exc),
+        ))
+        
+async def async_classify(item_ids: list[int]) -> list[dict]:
+    coros = []
+    for id in item_ids:
+        item = await queue.find_item(id=id)
+        document = await selectors.find_document(id=item.document_id)
+        
+        coros.append(classify_one(document, item.id))
+        
+    return await asyncio.gather(*coros)
+
+async def classify_one(document: Document, item_id: int) -> dict:
+    try:
+        if document.content is None or len(document.content) == 0:
+            raise ValueError(f"content is None for document {document.id}")
+        
+        classifier = create_classifier(type=ClassifierType.REGEX)
+        label: ClassificationLabel = classifier.classify(content=document.content)
+        
+        if label is None:
+            raise ValueError("classifier returned None")
+        
+        return asdict(ClassificationResult(
+            document_id=document.id,
+            item_id=item_id,
+            label=label.name,
+            ok=True,
+        ))
+    except Exception as exc:
+        return asdict(ChunkResult(
+            document_id=document.id,
+            item_id=item_id,
+            label=None,
             ok=False,
             error=traceback.format_exc(exc),
         ))

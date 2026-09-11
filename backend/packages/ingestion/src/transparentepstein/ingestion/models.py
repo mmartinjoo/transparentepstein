@@ -14,9 +14,19 @@ class DataSet():
 @dataclass
 class Document():
     id: int
-    url: str
-    content: str
-    s3_key: str
-    data_set_id: int
+    url: str    
+    data_set_id: int    
     created_at: datetime
-    updated_at: datetime
+    updated_at: datetime | None = None
+    main_classification_label: str | None = None
+    s3_key: str | None = None
+    content: str | None = None
+    
+@dataclass
+class DocumentChunk():
+    id: int
+    document_id: int
+    position: int
+    content: str
+    created_at: datetime
+    updated_at: datetime | None = None

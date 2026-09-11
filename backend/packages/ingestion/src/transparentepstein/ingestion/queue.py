@@ -11,6 +11,7 @@ MAX_ATTEMPTS = 10
 FETCH_LIMIT = 100
 LOAD_LIMIT = 200
 CHUNK_LIMIT = 500
+CLASSIFICATION_LIMIT=100
 
 @dataclass
 class Item():
@@ -156,6 +157,53 @@ async def dequeue_for_chunk() -> list[Item]:
                 Status.CHUNK_FAILED.name,
                 MAX_ATTEMPTS,
                 CHUNK_LIMIT,
+            ])
+            return await cur.fetchall()
+        
+async def dequeue_for_waiting_for_classification() -> list[Item]:
+    pool = await db.apool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=class_row(Item)) as cur:
+            await cur.execute("""
+                select *
+                from ops.ingestion_queue
+                where fetched = true
+                and loaded = true
+                and chunked = true
+                and classified = false
+                and status = %s
+                and attempts <= %s
+                and next_attempt_at <= now()                
+                order by created_at asc
+                for update skip locked
+            """, [
+                Status.CHUNKED.name,
+                MAX_ATTEMPTS,
+            ])
+            return await cur.fetchall()
+        
+async def dequeue_for_classification() -> list[Item]:
+    pool = await db.apool()
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=class_row(Item)) as cur:
+            await cur.execute("""
+                select *
+                from ops.ingestion_queue
+                where fetched = true
+                and loaded = true
+                and chunked = true
+                and classified = false
+                and status in (%s, %s)
+                and attempts <= %s
+                and next_attempt_at <= now()                
+                order by created_at asc
+                limit %s
+                for update skip locked
+            """, [
+                Status.WAITING_FOR_CLASSIFICATION.name,
+                Status.CLASSIFICATION_FAILED.name,
+                MAX_ATTEMPTS,
+                CLASSIFICATION_LIMIT,
             ])
             return await cur.fetchall()
         
@@ -397,7 +445,7 @@ async def mark_chunk_failed(item: Item, error: str):
                 status = %s,
                 error = %s,
                 next_attempt_at = now() + interval '1 hour',
-                chunked = false
+                chunked = false,
                 updated_at = now()
             where id = %s
         """,
@@ -430,6 +478,95 @@ async def mark_chunked(
         ]
     )
     
+async def mark_waiting_for_classification(
+    item: Item
+):
+    assert item is not None
+    
+    guard_transition(item=item, to_status=Status.WAITING_FOR_CLASSIFICATION)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                chunked = true,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.WAITING_FOR_CLASSIFICATION.name,
+            item.id,
+        ]
+    )
+    
+async def mark_classifying(
+    items: list[Item]
+):
+    assert len(items) != 0
+    
+    for item in items:
+        guard_transition(item=item, to_status=Status.CLASSIFYING)
+    
+    in_clause = ','.join(['%s'] * len(items))
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                attempts = attempts + 1,
+                updated_at = now()
+            where id in ({in_clause})
+        """,
+        inputs=[
+            Status.CLASSIFYING.name,
+            *[item.id for item in items],
+        ]
+    )
+    
+async def mark_classification_failed(item: Item, error: str):
+    guard_transition(item=item, to_status=Status.CLASSIFICATION_FAILED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                error = %s,
+                next_attempt_at = now() + interval '1 hour',
+                classified = false,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.CLASSIFICATION_FAILED.name,
+            error,
+            item.id,
+        ]
+    )
+    
+async def mark_classified(
+    item: Item, 
+):
+    assert item is not None
+    
+    guard_transition(item=item, to_status=Status.CLASSIFIED)
+    
+    await db.update(
+        query=f"""
+            update ops.ingestion_queue
+            set
+                status = %s,
+                classified = true,
+                updated_at = now()
+            where id = %s
+        """,
+        inputs=[
+            Status.CLASSIFIED.name,
+            item.id,
+        ]
+    )
+    
 class Status(Enum):
     WAITING_FOR_FETCH = "waiting_for_fetch"
     FETCHING = "fetching"
@@ -449,6 +586,7 @@ class Status(Enum):
     WAITING_FOR_CLASSIFICATION = "waiting_for_classification"
     CLASSIFYING = "classifying"
     CLASSIFIED = "classified"
+    CLASSIFICATION_FAILED = "classification_failed"
     
     WAITING_FOR_EMBEDDING = "waiting_for_embedding"
     EMBEDDING = "embedding"
@@ -479,6 +617,10 @@ def guard_transition(
         Status.FETCHING: {
             "to_status": Status.FETCHED,
             "criteria": lambda ip: ip.fetched == False,
+        },
+        Status.FETCHED: {
+            "to_status": Status.FETCH_FAILED,
+            "criteria": lambda: True,
         },        
         Status.FETCHED: {
             "to_status": Status.WAITING_FOR_LOAD,
@@ -500,13 +642,25 @@ def guard_transition(
         Status.LOADING: {
             "to_status": Status.LOADED,
             "criteria": lambda ip: ip.fetched == True and ip.loaded == False,
-        },        
+        },      
+        Status.LOADED: {
+            "to_status": Status.LOAD_FAILED,
+            "criteria": lambda ip: ip.fetched == True,
+        },      
         Status.LOADED: {
             "to_status": Status.WAITING_FOR_CHUNK,
             "criteria": lambda ip: ip.fetched == True and ip.loaded == True and ip.chunked == False and ip.document_id is not None,
         },
         
         Status.WAITING_FOR_CHUNK: {
+            "to_status": Status.CHUNKING,
+            "criteria": lambda ip: ip.fetched == True and ip.chunked == False,
+        },
+        Status.CHUNKING: {
+            "to_status": Status.CHUNK_FAILED,
+            "criteria": lambda ip: ip.fetched == True and ip.chunked == False,
+        },
+        Status.CHUNK_FAILED: {
             "to_status": Status.CHUNKING,
             "criteria": lambda ip: ip.fetched == True and ip.chunked == False,
         },
@@ -524,8 +678,20 @@ def guard_transition(
             "criteria": lambda ip: ip.fetched == True and ip.chunked == True and ip.classified == False,
         },
         Status.CLASSIFYING: {
+            "to_status": Status.CLASSIFICATION_FAILED,
+            "criteria": lambda ip: ip.fetched == True and ip.chunked == True and ip.classified == False,
+        },
+        Status.CLASSIFICATION_FAILED: {
+            "to_status": Status.CLASSIFYING,
+            "criteria": lambda ip: ip.fetched == True and ip.chunked == True and ip.classified == False,
+        },
+        Status.CLASSIFYING: {
             "to_status": Status.CLASSIFIED,
             "criteria": lambda ip: ip.fetched == True and ip.chunked == True and ip.classified == False,
+        },
+        Status.CLASSIFIED: {
+            "to_status": Status.WAITING_FOR_EMBEDDING,
+            "criteria": lambda ip: ip.fetched == True and ip.chunked == True and ip.classified == True and ip.embedded == False,
         },
         Status.CLASSIFIED: {
             "to_status": Status.WAITING_FOR_EMBEDDING,

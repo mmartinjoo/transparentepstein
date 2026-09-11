@@ -2,6 +2,7 @@ import asyncio
 import logging
 from pprint import pprint
 
+from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, scraper, queue, tasks, services
 from transparentepstein.core import storage
 
@@ -158,9 +159,56 @@ async def chunk_stage():
             item = await queue.find_item(id=res.item_id)
             await services.create_document_chunks(document_id=res.document_id, chunks=res.chunks)
             await queue.mark_chunked(
-                item=item, 
+                item=item,
             )
             logger.info(f"document {res.document_id} chunked")
         else:
             await queue.mark_chunk_failed(item_id=res.item_id, error=res.error)
             logger.info(f"chunk failed for {res.document_id}, error: {res.error}")
+            
+async def move_to_classification_stage():
+    items = await queue.dequeue_for_waiting_for_classification()
+    for item in items:
+        chunk_count = await selectors.count_document_chunks_by_document(document_id=item.document_id)
+        if chunk_count is None or chunk_count == 0:
+            await queue.mark_chunk_failed(item=item, error="no chunks were created")
+            continue
+        
+        await queue.mark_waiting_for_classification(item=item)
+        logger.info(f"item {item.id} marked as waiting for classification")            
+            
+async def classification_stage():
+    items = await queue.dequeue_for_classification()
+    batch_size = len(items) // 5
+    results: list[tasks.ClassificationResult] = []
+    
+    for i in range(5):
+        start = i * batch_size
+        batch = items[start:start + batch_size]
+        
+        await queue.mark_classifying(items=batch)
+        
+        task_result = tasks.classify.delay([item.id for item in batch])
+                
+        load_results: list[tasks.ClassificationResult] = [tasks.ClassificationResult(**v) for v in task_result.get()]
+        for r in load_results:
+            results.append(r)
+    
+    for res in results:
+        if res.ok:
+            if res.label is None:
+                await queue.mark_classification_failed(item_id=res.item_id, error="empty label")
+                logger.info(f"classification failed for {res.document_id}, error: empty label")
+                continue
+            
+            label = ClassificationLabel[res.label]
+            
+            item = await queue.find_item(id=res.item_id)
+            await services.update_document_main_classification_label(document_id=res.document_id, label=label)
+            await queue.mark_classified(
+                item=item,
+            )
+            logger.info(f"document {res.document_id} classified")
+        else:
+            await queue.mark_classification_failed(item_id=res.item_id, error=res.error)
+            logger.info(f"classification failed for {res.document_id}, error: {res.error}")
