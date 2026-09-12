@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass, asdict, field
 import logging
+from pprint import pprint
 import aiohttp
 import traceback
 
@@ -51,8 +52,8 @@ class ChunkResult():
     error: str | None = None
 
 @celery.app.task
-def fetch(item_ids: list[int]):
-    return asyncio.run(async_fetch(item_ids))
+def fetch(url: str, item_id: int, data_set_id: int):
+    return asyncio.run(async_fetch(url, item_id, data_set_id))
 
 @celery.app.task
 def load(item_ids: list[int]):
@@ -62,55 +63,40 @@ def load(item_ids: list[int]):
 def chunk(item_ids: list[int]):
     return asyncio.run(async_chunk(item_ids))
 
-async def async_fetch(item_ids: list[int]) -> list[FetchResult]:
-    items = await queue.find_items(item_ids=item_ids)
-
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
-    
+async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
     # No total timeout since files can be large. Only fail if can't connect or see no data for 60s
     timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
-    
-    async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
-        results: list[FetchResult] = await asyncio.gather(
-            *[fetch_one(session, semaphore, item) for item in items]
-        )
-        return results
-    
-async def fetch_one(
-    session: aiohttp.ClientSession,
-    semaphore: asyncio.Semaphore,
-    item: queue.Item,
-) -> dict:
-    async with semaphore:
+
+    async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:    
         try:
-            parts = item.url.split("/")
+            parts = url.split("/")
             filename = parts[-1]            
-            async with session.get(item.url) as response:
+            async with session.get(url) as response:
                 if response.status != 200:
                     return asdict(FetchResult(
-                        item_id=item.id,
-                        url=item.url,
+                        item_id=item_id,
+                        url=url,
                         ok=False,
                         error=f"HTTP error: {response.status}"
                     ))
 
                 data = await response.read()
                 
-            data_set = await selectors.find_data_set(data_set_id=item.data_set_id)
+            data_set = await selectors.find_data_set(data_set_id=data_set_id)
             key = await asyncio.to_thread(storage.put_file, data_set.name, filename, data)
             logger.info(f"saved {len(data)} bytes to \"{key}\"")
             return asdict(FetchResult(
-                item_id=item.id,
-                url=item.url,
+                item_id=item_id,
+                url=url,
                 ok=True,
                 s3_key=key,
             ))
             
         except Exception as exc:
-            logger.info(f"fetch failed for {item.url} with error: {exc}")
+            logger.info(f"fetch failed for {url} with error: {exc}")
             return asdict(FetchResult(
-                item_id=item.id,
-                url=item.url,
+                item_id=item_id,
+                url=url,
                 ok=False,
                 error=traceback.format_exc(exc)
             ))

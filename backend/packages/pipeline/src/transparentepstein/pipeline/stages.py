@@ -36,21 +36,14 @@ async def fetch_stage():
     items = await queue.dequeue_for_fetch()
     logger.info(f"fetching {len(items)} URLs")
     
-    batch_size = len(items) // 5
-    results: list[tasks.FetchResult] = []
+    await queue.mark_fetching(items=items)
     
-    for i in range(5):
-        start = i * batch_size
-        batch = items[start:start + batch_size]        
+    task_results: list[dict] = []
+    for item in items:
+        task_result = tasks.fetch.delay(url=item.url, item_id=item.id, data_set_id=item.data_set_id)
+        task_results.append(task_result.get())
         
-        await queue.mark_fetching(items=batch)
-        
-        task_result = tasks.fetch.delay([item.id for item in batch])
-        
-        fetch_results: list[tasks.FetchResult] = [tasks.FetchResult(**v) for v in task_result.get()]
-        for r in fetch_results:
-            results.append(r)
-        
+    results = [tasks.FetchResult(**r) for r in task_results]
     for res in results:
         if res.ok:
             item = await queue.find_item(id=res.item_id)
@@ -67,7 +60,7 @@ async def fetch_stage():
         else:
             await queue.mark_fetch_failed(item_id=res.item_id, error=res.error)
             logger.error(f"fetch failed at {res.url}, error: {res.error}")
-            
+        
 async def move_to_load_stage():
     items = await queue.dequeue_for_waiting_for_load()
     for item in items:
