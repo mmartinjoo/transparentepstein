@@ -152,18 +152,26 @@ async def load_stage():
             )
             logger.error(f"load failed for {res.document_id}, error: {res.error}")
             
-async def move_to_chunk_stage():
-    items = await queue.dequeue_for_waiting_for_chunk()
-    for item in items:
-        document = await selectors.find_document(id=item.document_id)
-
+async def transition_to_chunk_stage():
+    documents = await document_pipeline.fetch(
+        stage=document_pipeline.Stage.LOAD,
+        stage_status=document_pipeline.StageStatus.DONE,
+    )
+    for document in documents:
         if document.content is None or len(document.content) == 0:
-            await queue.mark_load_failed(item=item, error=f"content is empty for {document.id}")
-            logger.error(f"item {item.id} marked as failed: content is empty")
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"content is empty for {document.id}"
+            )
+            logger.error(f"document {document.id} marked as failed: content is empty")
             continue
             
-        await queue.mark_waiting_for_chunk(item=item)
-        logger.info(f"item {item.id} marked as waiting for chunk")            
+        await document_pipeline.transition_to_next_stage(
+            document_id=document.id,
+            current_stage=document_pipeline.Stage.LOAD,
+        )
+        logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CHUNK} stage")            
 
 async def chunk_stage():
     items = await queue.dequeue_for_chunk()
