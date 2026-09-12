@@ -174,25 +174,21 @@ async def transition_to_chunk_stage():
         logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CHUNK} stage")            
 
 async def chunk_stage():
-    items = await queue.dequeue_for_chunk()
-    batch_size = len(items) // 5
+    documents = await queue.dequeue(stage=document_pipeline.Stage.CHUNK)
+    batch_size = len(documents) // 5
     results: list[tasks.ChunkResult] = []
     
     for i in range(5):
         start = i * batch_size
-        batch = items[start:start + batch_size]
+        batch = documents[start:start + batch_size]
+        document_ids = [d.id for d in batch]
         
-        await queue.mark_chunking(items=batch)
+        await document_pipeline.mark_many(
+            document_ids=document_ids,
+            stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+        )
         
-        context = {}
-        for item in batch:
-            context[item.id] = {
-                "item_id": item.id,
-                "document_id": item.document_id,
-            }
-        
-        task_result = tasks.chunk.delay(context)
-                
+        task_result = tasks.chunk.delay(document_ids)
         load_results: list[tasks.ChunkResult] = [tasks.ChunkResult(**v) for v in task_result.get()]
         for r in load_results:
             results.append(r)
@@ -200,18 +196,26 @@ async def chunk_stage():
     for res in results:
         if res.ok:
             if len(res.chunks) == 0:
-                await queue.mark_chunk_failed(item_id=res.item_id, error="empty chunks")
-                logger.info(f"chunk failed for {res.document_id}, error: empty chunks")
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"empty chunks"
+                )
+                logger.error(f"chunk failed for {res.document_id}, error: empty chunks")
                 continue
             
-            item = await queue.find_item(id=res.item_id)
             await services.create_document_chunks(document_id=res.document_id, chunks=res.chunks)
-            await queue.mark_chunked(
-                item=item,
+            await document_pipeline.mark_one(
+                document_id=res.document_id,
+                stage_status=document_pipeline.StageStatus.DONE,
             )
             logger.info(f"document {res.document_id} chunked")
         else:
-            await queue.mark_chunk_failed(item_id=res.item_id, error=res.error)
+            await document_pipeline.mark_one(
+                document_id=res.document_id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=res.error,
+            )
             logger.info(f"chunk failed for {res.document_id}, error: {res.error}")
             
 async def move_to_classification_stage():

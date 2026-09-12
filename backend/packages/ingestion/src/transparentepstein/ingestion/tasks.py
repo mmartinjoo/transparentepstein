@@ -45,7 +45,6 @@ class LoadResult():
 @dataclass
 class ChunkResult():
     document_id: int
-    item_id: int
     ok: bool
     chunks: list[str] = field(default_factory=lambda: [])
     error: str | None = None
@@ -59,11 +58,8 @@ def load(document_ids: list[int]):
     return asyncio.run(async_load(document_ids))
 
 @celery.app.task
-def chunk(context: dict[str, any]):
-    for item_id in context.keys():
-        assert "document_id" in context[item_id]
-        
-    return asyncio.run(async_chunk(context))
+def chunk(document_ids: list[int]):
+    return asyncio.run(async_chunk(document_ids))
 
 async def async_fetch(document_id: int, url: str, data_set_id: int) -> dict:
     # No total timeout since files can be large. Only fail if can't connect or see no data for 60s
@@ -127,15 +123,15 @@ async def load_one(document: Document) -> dict:
             error=traceback.format_exc(exc),
         ))
         
-async def async_chunk(context: dict[str, any]) -> list[dict]:
+async def async_chunk(document_ids: list[int]) -> list[dict]:
     coros = []
-    for item_id in context.keys():
-        document = await selectors.find_document(id=context[item_id]["document_id"])
-        coros.append(chunk_one(document, item_id))
+    for id in document_ids:
+        document = await selectors.find_document(id=id)
+        coros.append(chunk_one(document))
         
     return await asyncio.gather(*coros)
 
-async def chunk_one(document: Document, item_id: int) -> dict:
+async def chunk_one(document: Document) -> dict:
     try:
         if document.content is None or len(document.content) == 0:
             raise ValueError(f"content is None for document {document.id}")
@@ -143,14 +139,12 @@ async def chunk_one(document: Document, item_id: int) -> dict:
         chunks = await asyncio.to_thread(services.chunk_text, text=document.content)
         return asdict(ChunkResult(
             document_id=document.id,
-            item_id=item_id,
             chunks=chunks,
             ok=True,
         ))
     except Exception as exc:
         return asdict(ChunkResult(
             document_id=document.id,
-            item_id=item_id,
             chunks=[],
             ok=False,
             error=traceback.format_exc(exc),
