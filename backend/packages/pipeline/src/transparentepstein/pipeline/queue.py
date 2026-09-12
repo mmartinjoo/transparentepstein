@@ -5,7 +5,7 @@ from enum import Enum
 from psycopg.rows import class_row
 
 from transparentepstein.core import db
-from transparentepstein.ingestion.models import Document
+from transparentepstein.pipeline.models import Document
 
 MAX_ATTEMPTS = 10
 FETCH_LIMIT = 100
@@ -14,7 +14,7 @@ CHUNK_LIMIT = 500
 CLASSIFICATION_LIMIT=100
 
 @dataclass
-class Item():
+class DocumentPipeline():
     id: int
     url: str
     data_set_id: int
@@ -52,10 +52,10 @@ async def enqueue_urls(urls: list[str], data_set_id: int):
             
             await conn.commit()
             
-async def dequeue_for_fetch() -> list[Item]:
+async def dequeue_for_fetch() -> list[DocumentPipeline]:
     pool = await db.apool()
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=class_row(Item)) as cur:
+        async with conn.cursor(row_factory=class_row(DocumentPipeline)) as cur:
             await cur.execute("""
                 select *
                 from ops.ingestion_queue
@@ -74,10 +74,10 @@ async def dequeue_for_fetch() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def dequeue_for_waiting_for_load() -> list[Item]:
+async def dequeue_for_waiting_for_load() -> list[DocumentPipeline]:
     pool = await db.apool()
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=class_row(Item)) as cur:
+        async with conn.cursor(row_factory=class_row(DocumentPipeline)) as cur:
             await cur.execute("""
                 select *
                 from ops.ingestion_queue
@@ -93,10 +93,10 @@ async def dequeue_for_waiting_for_load() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def dequeue_for_load() -> list[Item]:
+async def dequeue_for_load() -> list[DocumentPipeline]:
     pool = await db.apool()
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=class_row(Item)) as cur:
+        async with conn.cursor(row_factory=class_row(DocumentPipeline)) as cur:
             await cur.execute("""
                 select *
                 from ops.ingestion_queue
@@ -116,10 +116,10 @@ async def dequeue_for_load() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def dequeue_for_waiting_for_chunk() -> list[Item]:
+async def dequeue_for_waiting_for_chunk() -> list[DocumentPipeline]:
     pool = await db.apool()
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=class_row(Item)) as cur:
+        async with conn.cursor(row_factory=class_row(DocumentPipeline)) as cur:
             await cur.execute("""
                 select *
                 from ops.ingestion_queue
@@ -136,10 +136,10 @@ async def dequeue_for_waiting_for_chunk() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def dequeue_for_chunk() -> list[Item]:
+async def dequeue_for_chunk() -> list[DocumentPipeline]:
     pool = await db.apool()
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=class_row(Item)) as cur:
+        async with conn.cursor(row_factory=class_row(DocumentPipeline)) as cur:
             await cur.execute("""
                 select *
                 from ops.ingestion_queue
@@ -160,10 +160,10 @@ async def dequeue_for_chunk() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def dequeue_for_waiting_for_classification() -> list[Item]:
+async def dequeue_for_waiting_for_classification() -> list[DocumentPipeline]:
     pool = await db.apool()
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=class_row(Item)) as cur:
+        async with conn.cursor(row_factory=class_row(DocumentPipeline)) as cur:
             await cur.execute("""
                 select *
                 from ops.ingestion_queue
@@ -182,10 +182,10 @@ async def dequeue_for_waiting_for_classification() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def dequeue_for_classification() -> list[Item]:
+async def dequeue_for_classification() -> list[DocumentPipeline]:
     pool = await db.apool()
     async with pool.connection() as conn:
-        async with conn.cursor(row_factory=class_row(Item)) as cur:
+        async with conn.cursor(row_factory=class_row(DocumentPipeline)) as cur:
             await cur.execute("""
                 select *
                 from ops.ingestion_queue
@@ -207,7 +207,7 @@ async def dequeue_for_classification() -> list[Item]:
             ])
             return await cur.fetchall()
         
-async def find_items(item_ids: list[int]) -> list[Item]:
+async def find_items(item_ids: list[int]) -> list[DocumentPipeline]:
     in_clause = ','.join(['%s'] * len(item_ids))
     return await db.select_many(
         query=f"""
@@ -216,10 +216,10 @@ async def find_items(item_ids: list[int]) -> list[Item]:
             where id in ({in_clause})
         """,
         inputs=tuple(item_ids),
-        row_factory=class_row(Item),
+        row_factory=class_row(DocumentPipeline),
     )
     
-async def find_item(id: int) -> Item:
+async def find_item(id: int) -> DocumentPipeline:
     return await db.select_one(
         query=f"""
             select *
@@ -227,11 +227,11 @@ async def find_item(id: int) -> Item:
             where id = %s
         """,
         inputs=[id],
-        row_factory=class_row(Item),
+        row_factory=class_row(DocumentPipeline),
     )
     
 async def mark_fetching(
-    items: list[Item]
+    items: list[DocumentPipeline]
 ):
     assert len(items) != 0
     
@@ -255,7 +255,7 @@ async def mark_fetching(
     )
     
 async def mark_fetched(
-    item: Item, 
+    item: DocumentPipeline, 
     document: Document,
 ):
     assert document is not None
@@ -279,7 +279,7 @@ async def mark_fetched(
         ]
     )
 
-async def mark_fetch_failed(item: Item, error: str):
+async def mark_fetch_failed(item: DocumentPipeline, error: str):
     guard_transition(item=item, to_status=Status.FETCH_FAILED)
     
     await db.update(
@@ -301,7 +301,7 @@ async def mark_fetch_failed(item: Item, error: str):
     )
     
 async def mark_waiting_for_load(
-    item: Item
+    item: DocumentPipeline
 ):
     assert item is not None
     
@@ -323,7 +323,7 @@ async def mark_waiting_for_load(
     )
     
 async def mark_loading(
-    items: list[Item]
+    items: list[DocumentPipeline]
 ):
     assert len(items) != 0
     
@@ -347,7 +347,7 @@ async def mark_loading(
     )
     
 async def mark_loaded(
-    item: Item, 
+    item: DocumentPipeline, 
 ):
     assert item is not None
     
@@ -368,7 +368,7 @@ async def mark_loaded(
         ]
     )
     
-async def mark_load_failed(item: Item, error: str):
+async def mark_load_failed(item: DocumentPipeline, error: str):
     guard_transition(item=item, to_status=Status.LOAD_FAILED)
     
     await db.update(
@@ -390,7 +390,7 @@ async def mark_load_failed(item: Item, error: str):
     )
     
 async def mark_waiting_for_chunk(
-    item: Item
+    item: DocumentPipeline
 ):
     assert item is not None
     
@@ -412,7 +412,7 @@ async def mark_waiting_for_chunk(
     )
     
 async def mark_chunking(
-    items: list[Item]
+    items: list[DocumentPipeline]
 ):
     assert len(items) != 0
     
@@ -435,7 +435,7 @@ async def mark_chunking(
         ]
     )
     
-async def mark_chunk_failed(item: Item, error: str):
+async def mark_chunk_failed(item: DocumentPipeline, error: str):
     guard_transition(item=item, to_status=Status.CHUNK_FAILED)
     
     await db.update(
@@ -457,7 +457,7 @@ async def mark_chunk_failed(item: Item, error: str):
     )
     
 async def mark_chunked(
-    item: Item, 
+    item: DocumentPipeline, 
 ):
     assert item is not None
     
@@ -479,7 +479,7 @@ async def mark_chunked(
     )
     
 async def mark_waiting_for_classification(
-    item: Item
+    item: DocumentPipeline
 ):
     assert item is not None
     
@@ -501,7 +501,7 @@ async def mark_waiting_for_classification(
     )
     
 async def mark_classifying(
-    items: list[Item]
+    items: list[DocumentPipeline]
 ):
     assert len(items) != 0
     
@@ -524,7 +524,7 @@ async def mark_classifying(
         ]
     )
     
-async def mark_classification_failed(item: Item, error: str):
+async def mark_classification_failed(item: DocumentPipeline, error: str):
     guard_transition(item=item, to_status=Status.CLASSIFICATION_FAILED)
     
     await db.update(
@@ -546,7 +546,7 @@ async def mark_classification_failed(item: Item, error: str):
     )
     
 async def mark_classified(
-    item: Item, 
+    item: DocumentPipeline, 
 ):
     assert item is not None
     
@@ -598,7 +598,7 @@ class StatusTransitionError(Exception):
     pass
 
 def guard_transition(
-    item: Item,
+    item: DocumentPipeline,
     to_status: Status, 
 ):
     allowed: dict[Status, dict] = {
