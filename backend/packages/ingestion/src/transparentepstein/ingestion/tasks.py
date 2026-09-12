@@ -57,11 +57,17 @@ def fetch(url: str, item_id: int, data_set_id: int):
 
 @celery.app.task
 def load(context: dict[str, any]):
+    for item_id in context.keys():
+        assert "document_id" in context[item_id]
+            
     return asyncio.run(async_load(context))
 
 @celery.app.task
-def chunk(item_ids: list[int]):
-    return asyncio.run(async_chunk(item_ids))
+def chunk(context: dict[str, any]):
+    for item_id in context.keys():
+        assert "document_id" in context[item_id]
+        
+    return asyncio.run(async_chunk(context))
 
 async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
     # No total timeout since files can be large. Only fail if can't connect or see no data for 60s
@@ -104,8 +110,6 @@ async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
 async def async_load(context: dict[str, any]) -> list[dict]:
     coros = []
     for item_id in context.keys():
-        assert "document_id" in context[item_id]
-        
         document = await selectors.find_document(id=context[item_id]["document_id"])
         coros.append(load_one(document, item_id))
         
@@ -129,12 +133,11 @@ async def load_one(document: Document, item_id: int) -> dict:
             error=traceback.format_exc(exc),
         ))
         
-async def async_chunk(item_ids: list[int]) -> list[dict]:
+async def async_chunk(context: dict[str, any]) -> list[dict]:
     coros = []
-    for id in item_ids:
-        item = await queue.find_item(id=id)
-        document = await selectors.find_document(id=item.document_id)
-        coros.append(chunk_one(document, item.id))
+    for item_id in context.keys():
+        document = await selectors.find_document(id=context[item_id]["document_id"])
+        coros.append(chunk_one(document, item_id))
         
     return await asyncio.gather(*coros)
 

@@ -146,7 +146,14 @@ async def chunk_stage():
         
         await queue.mark_chunking(items=batch)
         
-        task_result = tasks.chunk.delay([item.id for item in batch])
+        context = {}
+        for item in batch:
+            context[item.id] = {
+                "item_id": item.id,
+                "document_id": item.document_id,
+            }
+        
+        task_result = tasks.chunk.delay(context)
                 
         load_results: list[tasks.ChunkResult] = [tasks.ChunkResult(**v) for v in task_result.get()]
         for r in load_results:
