@@ -32,6 +32,15 @@ class DocumentPipeline():
     updated_at: datetime
     finished_at: datetime
 
+async def enqueue(document: Document):
+    await db.insert(
+        query="""
+            insert into ops.document_queue(document_id)
+            values(%s)   
+        """,
+        inputs=[document.id],
+    )
+
 async def enqueue_urls(urls: list[str], data_set_id: int):
     assert data_set_id is not None
         

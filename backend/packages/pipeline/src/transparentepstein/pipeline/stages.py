@@ -5,6 +5,7 @@ from pprint import pprint
 from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, scraper, tasks, services
 from transparentepstein.classification import services as classification_services
+from transparentepstein.pipeline.services import update_data_set_processed_until
 from transparentepstein.core import storage
 from transparentepstein.classification.tasks import classify as classify_task
 from transparentepstein.classification.tasks import ClassificationResult
@@ -25,11 +26,16 @@ async def discover_stage():
     urls = await scraper.discover(data_set=data_set, page=next_page)
     if len(urls) == 0:
         raise NothingToDiscoverError(f"zero URLs discovered for {data_set.name} at page {next_page}")
-    
-    await queue.enqueue_urls(
-        urls=urls,
-        data_set_id=data_set.id,
-    )
+
+    for url in urls:
+        document = await services.create_document(
+            url=url,
+            data_set_id=data_set.id,
+        )
+        logger.info(f"document created {document.id}")
+        
+        await queue.enqueue(document=document)
+        await update_data_set_processed_until(data_set_id=data_set.id)
     
     logger.info(f"discovered {len(urls)} URLs on page {next_page}")
     
