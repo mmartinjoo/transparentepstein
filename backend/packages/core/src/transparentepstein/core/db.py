@@ -91,6 +91,16 @@ async def update(
         async with conn.cursor() as cur:
             await cur.execute(query, inputs)
             await conn.commit()
+            
+async def delete(
+    query: str,
+    inputs: list,
+):
+    pool = await apool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(query, inputs)
+            await conn.commit()
         
 @lru_cache(maxsize=1)
 def pool() -> ConnectionPool:

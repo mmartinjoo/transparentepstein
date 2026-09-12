@@ -4,7 +4,7 @@ from transparentepstein.core import db
 from transparentepstein.pipeline.document_pipeline import Stage, StageStatus
 from transparentepstein.pipeline.models import Document
 
-MAX_ATTEMPTS = 10
+MAX_ATTEMPTS = 15
 
 async def enqueue(document: Document):
     await db.insert(
@@ -28,6 +28,7 @@ async def dequeue(stage: Stage) -> list[Document]:
             and queue.next_attempt_at <= now()
             order by queue.queued_at desc
             limit 100
+            for update skip locked
         """,
         inputs=[
             stage.name,
@@ -36,4 +37,15 @@ async def dequeue(stage: Stage) -> list[Document]:
             MAX_ATTEMPTS,
         ],
         row_factory=class_row(Document),
+    )
+
+async def remove(document_id: int):
+    await db.delete(
+        query="""
+            delete from ops.document_queue
+            where document_id = %s
+        """,
+        inputs=[
+            document_id
+        ],
     )

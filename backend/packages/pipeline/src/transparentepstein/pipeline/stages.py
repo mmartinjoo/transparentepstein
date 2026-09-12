@@ -282,6 +282,7 @@ async def classification_stage():
                 document_id=res.document_id,
                 stage_status=document_pipeline.StageStatus.DONE,
             )
+            await document_queue.remove(document_id=res.document_id)
             logger.info(f"document {res.document_id} classified as {res.label}")
         else:
             await document_pipeline.mark_one(
