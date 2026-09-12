@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import asdict
 import logging
 from pprint import pprint
 
@@ -7,8 +8,7 @@ from transparentepstein.ingestion import selectors, scraper, tasks, services
 from transparentepstein.classification import services as classification_services
 from transparentepstein.pipeline.services import update_data_set_processed_until, update_document_s3_key
 from transparentepstein.core import storage
-from transparentepstein.classification.tasks import classify as classify_task
-from transparentepstein.classification.tasks import ClassificationResult
+from transparentepstein.classification.tasks import classify as classify_task, ClassificationRequest, ClassificationResponse
 from transparentepstein.pipeline import queue, document_pipeline
 
 logger = logging.getLogger(__name__)
@@ -51,14 +51,10 @@ async def fetch_stage():
     
     task_results: list[dict] = []
     for document in documents:
-        task_result = tasks.fetch.delay(
-            document_id=document.id,
-            url=document.url, 
-            data_set_id=document.data_set_id,
-        )
+        task_result = tasks.fetch.delay(asdict(document))
         task_results.append(task_result.get())
         
-    results = [tasks.FetchResult(**r) for r in task_results]
+    results = [tasks.FetchResponse(**r) for r in task_results]
     for res in results:
         if res.ok:
             await update_document_s3_key(document_id=res.document_id, s3_key=res.s3_key)
@@ -111,7 +107,7 @@ async def transition_to_load_stage():
 async def load_stage():
     documents = await queue.dequeue(stage=document_pipeline.Stage.LOAD)
     batch_size = len(documents) // 5
-    results: list[tasks.LoadResult] = []
+    results: list[tasks.LoadResponse] = []
     
     for i in range(5):
         start = i * batch_size
@@ -121,9 +117,9 @@ async def load_stage():
             document_ids=document_ids,
             stage_status=document_pipeline.StageStatus.IN_PROGRESS,
         )
-        
-        task_result = tasks.load.delay(document_ids)
-        load_results: list[tasks.LoadResult] = [tasks.LoadResult(**v) for v in task_result.get()]
+                
+        task_result = tasks.load.delay([asdict(d) for d in batch])
+        load_results: list[tasks.LoadResponse] = [tasks.LoadResponse(**v) for v in task_result.get()]
         for r in load_results:
             results.append(r)
             
@@ -176,7 +172,7 @@ async def transition_to_chunk_stage():
 async def chunk_stage():
     documents = await queue.dequeue(stage=document_pipeline.Stage.CHUNK)
     batch_size = len(documents) // 5
-    results: list[tasks.ChunkResult] = []
+    results: list[tasks.ChunkResponse] = []
     
     for i in range(5):
         start = i * batch_size
@@ -188,8 +184,8 @@ async def chunk_stage():
             stage_status=document_pipeline.StageStatus.IN_PROGRESS,
         )
         
-        task_result = tasks.chunk.delay(document_ids)
-        load_results: list[tasks.ChunkResult] = [tasks.ChunkResult(**v) for v in task_result.get()]
+        task_result = tasks.chunk.delay([asdict(doc) for doc in batch])
+        load_results: list[tasks.ChunkResponse] = [tasks.ChunkResponse(**v) for v in task_result.get()]
         for r in load_results:
             results.append(r)
     
@@ -243,25 +239,28 @@ async def transition_to_classification_stage():
 async def classification_stage():
     documents = await queue.dequeue(stage=document_pipeline.Stage.CLASSIFY)
     batch_size = len(documents) // 5
-    results: list[ClassificationResult] = []
+    results: list[ClassificationResponse] = []
     
     for i in range(5):
         start = i * batch_size
         batch = documents[start:start + batch_size]
         
-        document_ids = [d.id for d in documents]
+        document_ids = [d.id for d in batch]
         await document_pipeline.mark_many(
             document_ids=document_ids,
             stage_status=document_pipeline.StageStatus.IN_PROGRESS,
         )
         
-        context = {}
+        requests: list[ClassificationRequest] = []
         for document in batch:
-            context[document.id] = document.content
+            requests.append(asdict(ClassificationRequest(
+                document_id=document.id,
+                content=document.content,
+            )))
         
-        task_result = classify_task.delay(context)
+        task_result = classify_task.delay(requests)
                 
-        load_results: list[ClassificationResult] = [ClassificationResult(**v) for v in task_result.get()]
+        load_results: list[ClassificationResponse] = [ClassificationResponse(**v) for v in task_result.get()]
         for r in load_results:
             results.append(r)
     

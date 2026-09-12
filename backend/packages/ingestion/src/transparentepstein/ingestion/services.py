@@ -22,8 +22,8 @@ async def create_document(url: str, data_set_id: int) -> Document:
         returning=True,
     )
 
-async def load_document_content(document: Document) -> str:
-    data = await asyncio.to_thread(storage.get_file, document.s3_key)
+async def load_document_content(s3_key: str) -> str:
+    data = await asyncio.to_thread(storage.get_file, s3_key)
     doc = await asyncio.to_thread(pymupdf.open, stream=data, filetype="pdf")
     content = await asyncio.to_thread(_load_pages, doc=doc)
     return content

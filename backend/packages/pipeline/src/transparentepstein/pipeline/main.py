@@ -15,7 +15,7 @@ async def async_main():
         # await stages.transition_to_chunk_stage()
         # await stages.chunk_stage()
         # await stages.transition_to_classification_stage()
-        await stages.classification_stage()
+        # await stages.classification_stage()
     finally:
         await close_apool()
     

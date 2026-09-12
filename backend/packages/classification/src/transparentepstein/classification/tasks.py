@@ -9,9 +9,14 @@ from transparentepstein.classification import create_classifier
 from transparentepstein.classification.classifier.base import ClassificationLabel, ClassifierType
 
 logger = logging.getLogger(__name__)
-
+    
 @dataclass
-class ClassificationResult():
+class ClassificationRequest():
+    document_id: int
+    content: str
+    
+@dataclass
+class ClassificationResponse():
     document_id: int
     ok: bool
     label: str | None = None
@@ -21,39 +26,37 @@ DocumentId: TypeAlias = str
 DocumentContent: TypeAlias = str
 
 @celery.app.task
-def classify(context: dict[DocumentId, DocumentContent]):
-    for document_id in context.keys():
-        assert context[document_id] is not None and len(context[document_id]) != 0
+def classify(requests: list[dict]):
+    requests_mapped = [ClassificationRequest(**r) for r in requests]
+    for request in requests_mapped:
+        assert request.content is not None and len(request.content) != 0
         
-    return asyncio.run(async_classify(context))
+    return asyncio.run(async_classify(requests_mapped))
 
-async def async_classify(context: dict[DocumentId, DocumentContent]) -> list[dict]:
+async def async_classify(requests: list[ClassificationRequest]) -> list[dict]:
     coros = []
-    for document_id in context.keys():
-        coros.append(classify_one(document_id, context[document_id]))
+    for request in requests:
+        coros.append(classify_one(request))
         
     return await asyncio.gather(*coros)
 
-async def classify_one(document_id: int, content: str) -> dict:
+async def classify_one(request: ClassificationRequest) -> dict:
     try:
-        if content is None or len(content) == 0:
-            raise ValueError(f"content is None for document {document_id}")
-        
         # it's a simple regex classifier so the :500 makes sure that those keywords don't just randomly come up in a long document and gets classified as EMAIL
         classifier = create_classifier(type=ClassifierType.REGEX)
-        label: ClassificationLabel = classifier.classify(content=content[:500])
+        label: ClassificationLabel = classifier.classify(content=request.content[:500])
         
         if label is None:
             raise ValueError("classifier returned None")
         
-        return asdict(ClassificationResult(
-            document_id=document_id,
+        return asdict(ClassificationResponse(
+            document_id=request.document_id,
             label=label.name,
             ok=True,
         ))
     except Exception as exc:
-        return asdict(ClassificationResult(
-            document_id=document_id,
+        return asdict(ClassificationResponse(
+            document_id=request.document_id,
             label=None,
             ok=False,
             error=traceback.format_exc(exc),
