@@ -6,7 +6,7 @@ import aiohttp
 import traceback
 
 from transparentepstein.core import storage, celery
-from transparentepstein.ingestion import queue, selectors, services
+from transparentepstein.ingestion import selectors, services
 from transparentepstein.ingestion.models import Document
 
 logger = logging.getLogger(__name__)
