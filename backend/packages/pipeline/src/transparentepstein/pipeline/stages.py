@@ -75,25 +75,38 @@ async def fetch_stage():
             )
             logger.error(f"fetch failed for {res.document_id}, error: {res.error}")
     
-async def move_to_load_stage():
-    items = await queue.dequeue_for_waiting_for_load()
-    for item in items:
-        document = await selectors.find_document(id=item.document_id)
-
+async def transition_to_load_stage():
+    documents = await document_pipeline.fetch(
+        stage=document_pipeline.Stage.FETCH,
+        stage_status=document_pipeline.StageStatus.DONE,
+    )
+    
+    for document in documents:
         exists = await asyncio.to_thread(storage.exists, key=document.s3_key)
         if not exists:
-            await queue.mark_fetch_failed(item=item, error=f"S3 object does not exist at {document.s3_key}")
-            logger.error(f"item {item.id} marked as failed: S3 object does not exist")
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"S3 object does not exist at {document.s3_key} for document {document.id}",
+            )
+            logger.error(f"S3 object does not exist at {document.s3_key} for document {document.id}")
             continue
             
         empty = await asyncio.to_thread(storage.empty, key=document.s3_key)
         if empty:
-            await queue.mark_fetch_failed(item=item, error=f"S3 object exists but empty at {document.s3_key}")
-            logger.error(f"item {item.id} marked as failed: S3 object is empty")
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"S3 object exists but empty for document {document.id} at {document.s3_key}",
+            )
+            logger.error(f"S3 object exists but empty for document {document.id} at {document.s3_key}")
             continue
 
-        await queue.mark_waiting_for_load(item=item)
-        logger.info(f"item {item.id} marked as waiting for load")
+        await document_pipeline.transition_to_next_stage(
+            document_id=document.id,
+            current_stage=document_pipeline.Stage.FETCH,
+        )
+        logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.LOAD}")
             
 async def load_stage():
     items = await queue.dequeue_for_load()
