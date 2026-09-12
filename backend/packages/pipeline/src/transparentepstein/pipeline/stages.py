@@ -9,7 +9,7 @@ from transparentepstein.classification import services as classification_service
 from transparentepstein.pipeline.services import update_data_set_processed_until, update_document_s3_key
 from transparentepstein.core import storage
 from transparentepstein.classification.tasks import classify as classify_task, ClassificationRequest, ClassificationResponse
-from transparentepstein.pipeline import queue, document_pipeline
+from transparentepstein.pipeline import document_queue, document_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +34,14 @@ async def discover_stage():
         )
         logger.info(f"document created {document.id}")
         
-        await queue.enqueue(document=document)
+        await document_queue.enqueue(document=document)
         await document_pipeline.initialize(document)
         await update_data_set_processed_until(data_set_id=data_set.id)
     
     logger.info(f"discovered {len(urls)} URLs on page {next_page}")
     
 async def fetch_stage():
-    documents = await queue.dequeue(stage=document_pipeline.Stage.FETCH)
+    documents = await document_queue.dequeue(stage=document_pipeline.Stage.FETCH)
     logger.info(f"fetching {len(documents)} documents")
 
     await document_pipeline.mark_many(
@@ -105,7 +105,7 @@ async def transition_to_load_stage():
         logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.LOAD}")
           
 async def load_stage():
-    documents = await queue.dequeue(stage=document_pipeline.Stage.LOAD)
+    documents = await document_queue.dequeue(stage=document_pipeline.Stage.LOAD)
     batch_size = len(documents) // 5
     results: list[tasks.LoadResponse] = []
     
@@ -170,7 +170,7 @@ async def transition_to_chunk_stage():
         logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CHUNK} stage")            
 
 async def chunk_stage():
-    documents = await queue.dequeue(stage=document_pipeline.Stage.CHUNK)
+    documents = await document_queue.dequeue(stage=document_pipeline.Stage.CHUNK)
     batch_size = len(documents) // 5
     results: list[tasks.ChunkResponse] = []
     
@@ -237,7 +237,7 @@ async def transition_to_classification_stage():
         logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CLASSIFY} stage")            
             
 async def classification_stage():
-    documents = await queue.dequeue(stage=document_pipeline.Stage.CLASSIFY)
+    documents = await document_queue.dequeue(stage=document_pipeline.Stage.CLASSIFY)
     batch_size = len(documents) // 5
     results: list[ClassificationResponse] = []
     
