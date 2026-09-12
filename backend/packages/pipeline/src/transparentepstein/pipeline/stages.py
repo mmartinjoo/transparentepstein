@@ -3,11 +3,12 @@ import logging
 from pprint import pprint
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
-from transparentepstein.ingestion import selectors, scraper, queue, tasks, services
+from transparentepstein.ingestion import selectors, scraper, tasks, services
 from transparentepstein.classification import services as classification_services
 from transparentepstein.core import storage
 from transparentepstein.classification.tasks import classify as classify_task
 from transparentepstein.classification.tasks import ClassificationResult
+from transparentepstein.pipeline import queue
 
 logger = logging.getLogger(__name__)
 
