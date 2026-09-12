@@ -92,7 +92,14 @@ async def load_stage():
         
         await queue.mark_loading(items=batch)
         
-        task_result = tasks.load.delay([item.id for item in batch])
+        context = {}
+        for item in batch:
+            context[item.id] = {
+                "item_id": item.id,
+                "document_id": item.document_id,
+            }
+        
+        task_result = tasks.load.delay(context)
                 
         load_results: list[tasks.LoadResult] = [tasks.LoadResult(**v) for v in task_result.get()]
         for r in load_results:

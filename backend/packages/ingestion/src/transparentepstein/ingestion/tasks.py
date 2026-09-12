@@ -56,8 +56,8 @@ def fetch(url: str, item_id: int, data_set_id: int):
     return asyncio.run(async_fetch(url, item_id, data_set_id))
 
 @celery.app.task
-def load(item_ids: list[int]):
-    return asyncio.run(async_load(item_ids))
+def load(context: dict[str, any]):
+    return asyncio.run(async_load(context))
 
 @celery.app.task
 def chunk(item_ids: list[int]):
@@ -101,12 +101,13 @@ async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
                 error=traceback.format_exc(exc)
             ))
             
-async def async_load(item_ids: list[int]) -> list[dict]:
+async def async_load(context: dict[str, any]) -> list[dict]:
     coros = []
-    for id in item_ids:
-        item = await queue.find_item(id=id)
-        document = await selectors.find_document(id=item.document_id)
-        coros.append(load_one(document, item.id))
+    for item_id in context.keys():
+        assert "document_id" in context[item_id]
+        
+        document = await selectors.find_document(id=context[item_id]["document_id"])
+        coros.append(load_one(document, item_id))
         
     return await asyncio.gather(*coros)
 
