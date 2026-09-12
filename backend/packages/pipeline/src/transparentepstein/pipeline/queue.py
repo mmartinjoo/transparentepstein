@@ -5,6 +5,7 @@ from enum import Enum
 from psycopg.rows import class_row
 
 from transparentepstein.core import db
+from transparentepstein.pipeline.document_pipeline import Stage, StageStatus
 from transparentepstein.pipeline.models import Document
 
 MAX_ATTEMPTS = 10
@@ -39,6 +40,29 @@ async def enqueue(document: Document):
             values(%s)   
         """,
         inputs=[document.id],
+    )
+    
+async def dequeue(stage: Stage) -> list[Document]:
+    return await db.select_many(
+        query="""
+            select documents.*
+            from ops.document_queue as queue
+            join ops.document_pipeline as pipeline on pipeline.document_id = queue.document_id
+            join ops.documents as documents on documents.id = queue.document_id
+            where pipeline.stage = %s
+            and pipeline.stage_status in (%s, %s)
+            and queue.attempts < %s
+            and queue.next_attempt_at <= now()
+            order by queue.queued_at desc
+            limit 100
+        """,
+        inputs=[
+            stage.name,
+            StageStatus.PENDING.name,
+            StageStatus.FAILED.name,
+            MAX_ATTEMPTS,
+        ],
+        row_factory=class_row(Document),
     )
 
 async def enqueue_urls(urls: list[str], data_set_id: int):

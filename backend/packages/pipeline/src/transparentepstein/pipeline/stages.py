@@ -5,11 +5,11 @@ from pprint import pprint
 from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, scraper, tasks, services
 from transparentepstein.classification import services as classification_services
-from transparentepstein.pipeline.services import update_data_set_processed_until
+from transparentepstein.pipeline.services import update_data_set_processed_until, update_document_s3_key
 from transparentepstein.core import storage
 from transparentepstein.classification.tasks import classify as classify_task
 from transparentepstein.classification.tasks import ClassificationResult
-from transparentepstein.pipeline import queue
+from transparentepstein.pipeline import queue, document_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -35,39 +35,46 @@ async def discover_stage():
         logger.info(f"document created {document.id}")
         
         await queue.enqueue(document=document)
+        await document_pipeline.initialize(document)
         await update_data_set_processed_until(data_set_id=data_set.id)
     
     logger.info(f"discovered {len(urls)} URLs on page {next_page}")
     
 async def fetch_stage():
-    items = await queue.dequeue_for_fetch()
-    logger.info(f"fetching {len(items)} URLs")
-    
-    await queue.mark_fetching(items=items)
+    documents = await queue.dequeue(stage=document_pipeline.Stage.FETCH)
+    logger.info(f"fetching {len(documents)} documents")
+
+    await document_pipeline.mark_many(
+        document_ids=[d.id for d in documents],
+        stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+    )
     
     task_results: list[dict] = []
-    for item in items:
-        task_result = tasks.fetch.delay(url=item.url, item_id=item.id, data_set_id=item.data_set_id)
+    for document in documents:
+        task_result = tasks.fetch.delay(
+            document_id=document.id,
+            url=document.url, 
+            data_set_id=document.data_set_id,
+        )
         task_results.append(task_result.get())
         
     results = [tasks.FetchResult(**r) for r in task_results]
     for res in results:
         if res.ok:
-            item = await queue.find_item(id=res.item_id)
-            document = await services.create_document(
-                url=res.url,
-                s3_key=res.s3_key,
-                data_set_id=item.data_set_id,
+            await update_document_s3_key(document_id=res.document_id, s3_key=res.s3_key)
+            await document_pipeline.mark_one(
+                document_id=res.document_id, 
+                stage_status=document_pipeline.StageStatus.DONE,
             )
-            await queue.mark_fetched(
-                item=item, 
-                document=document,
-            )
-            logger.info(f"document {document.id} fetched from {document.url}")
+            logger.info(f"document {document.id} fetched with S3 key {res.s3_key}")
         else:
-            await queue.mark_fetch_failed(item_id=res.item_id, error=res.error)
-            logger.error(f"fetch failed at {res.url}, error: {res.error}")
-        
+            await document_pipeline.mark_one(
+                document_id=res.document_id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=res.error,
+            )
+            logger.error(f"fetch failed for {res.document_id}, error: {res.error}")
+    
 async def move_to_load_stage():
     items = await queue.dequeue_for_waiting_for_load()
     for item in items:

@@ -29,7 +29,7 @@ MAX_CONCURRENT_FETCHES = 8
 
 @dataclass
 class FetchResult():
-    item_id: int
+    document_id: int
     url: str
     ok: bool
     s3_key: str | None = None
@@ -52,8 +52,8 @@ class ChunkResult():
     error: str | None = None
 
 @celery.app.task
-def fetch(url: str, item_id: int, data_set_id: int):
-    return asyncio.run(async_fetch(url, item_id, data_set_id))
+def fetch(document_id: int, url: str, data_set_id: int):
+    return asyncio.run(async_fetch(document_id, url, data_set_id))
 
 @celery.app.task
 def load(context: dict[str, any]):
@@ -69,7 +69,7 @@ def chunk(context: dict[str, any]):
         
     return asyncio.run(async_chunk(context))
 
-async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
+async def async_fetch(document_id: int, url: str, data_set_id: int) -> dict:
     # No total timeout since files can be large. Only fail if can't connect or see no data for 60s
     timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
 
@@ -80,7 +80,7 @@ async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
             async with session.get(url) as response:
                 if response.status != 200:
                     return asdict(FetchResult(
-                        item_id=item_id,
+                        document_id=document_id,
                         url=url,
                         ok=False,
                         error=f"HTTP error: {response.status}"
@@ -92,7 +92,7 @@ async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
             key = await asyncio.to_thread(storage.put_file, data_set.name, filename, data)
             logger.info(f"saved {len(data)} bytes to \"{key}\"")
             return asdict(FetchResult(
-                item_id=item_id,
+                document_id=document_id,
                 url=url,
                 ok=True,
                 s3_key=key,
@@ -101,7 +101,7 @@ async def async_fetch(url: str, item_id: int, data_set_id: int) -> dict:
         except Exception as exc:
             logger.info(f"fetch failed for {url} with error: {exc}")
             return asdict(FetchResult(
-                item_id=item_id,
+                document_id=document_id,
                 url=url,
                 ok=False,
                 error=traceback.format_exc(exc)
