@@ -107,47 +107,50 @@ async def transition_to_load_stage():
             current_stage=document_pipeline.Stage.FETCH,
         )
         logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.LOAD}")
-            
+          
 async def load_stage():
-    items = await queue.dequeue_for_load()
-    batch_size = len(items) // 5
+    documents = await queue.dequeue(stage=document_pipeline.Stage.LOAD)
+    batch_size = len(documents) // 5
     results: list[tasks.LoadResult] = []
     
     for i in range(5):
         start = i * batch_size
-        batch = items[start:start + batch_size]
+        batch = documents[start:start + batch_size]
+        document_ids = [d.id for d in batch]
+        await document_pipeline.mark_many(
+            document_ids=document_ids,
+            stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+        )
         
-        await queue.mark_loading(items=batch)
-        
-        context = {}
-        for item in batch:
-            context[item.id] = {
-                "item_id": item.id,
-                "document_id": item.document_id,
-            }
-        
-        task_result = tasks.load.delay(context)
-                
+        task_result = tasks.load.delay(document_ids)
         load_results: list[tasks.LoadResult] = [tasks.LoadResult(**v) for v in task_result.get()]
         for r in load_results:
             results.append(r)
-    
+            
     for res in results:
         if res.ok:
             if res.content is None:
-                await queue.mark_load_failed(item_id=res.item_id, error="empty content")
-                logger.info(f"load failed for {res.document_id}, error: empty content")
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"empty content"
+                )
+                logger.error(f"load failed for {res.document_id}, error: empty content")
                 continue
             
-            item = await queue.find_item(id=res.item_id)
             await services.update_document_content(document_id=res.document_id, content=res.content)
-            await queue.mark_loaded(
-                item=item, 
+            await document_pipeline.mark_one(
+                document_id=res.document_id,
+                stage_status=document_pipeline.StageStatus.DONE,
             )
             logger.info(f"document {res.document_id} loaded")
         else:
-            await queue.mark_load_failed(item_id=res.item_id, error=res.error)
-            logger.info(f"load failed for {res.document_id}, error: {res.error}")
+            await document_pipeline.mark_one(
+                document_id=res.document_id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=res.error
+            )
+            logger.error(f"load failed for {res.document_id}, error: {res.error}")
             
 async def move_to_chunk_stage():
     items = await queue.dequeue_for_waiting_for_chunk()

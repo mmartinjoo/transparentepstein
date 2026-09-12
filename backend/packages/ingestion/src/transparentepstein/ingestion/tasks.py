@@ -38,7 +38,6 @@ class FetchResult():
 @dataclass
 class LoadResult():
     document_id: int
-    item_id: int
     ok: bool
     content: str | None = None    
     error: str | None = None
@@ -56,11 +55,8 @@ def fetch(document_id: int, url: str, data_set_id: int):
     return asyncio.run(async_fetch(document_id, url, data_set_id))
 
 @celery.app.task
-def load(context: dict[str, any]):
-    for item_id in context.keys():
-        assert "document_id" in context[item_id]
-            
-    return asyncio.run(async_load(context))
+def load(document_ids: list[int]):
+    return asyncio.run(async_load(document_ids))
 
 @celery.app.task
 def chunk(context: dict[str, any]):
@@ -107,27 +103,25 @@ async def async_fetch(document_id: int, url: str, data_set_id: int) -> dict:
                 error=traceback.format_exc(exc)
             ))
             
-async def async_load(context: dict[str, any]) -> list[dict]:
+async def async_load(document_ids: list[int]) -> list[dict]:
     coros = []
-    for item_id in context.keys():
-        document = await selectors.find_document(id=context[item_id]["document_id"])
-        coros.append(load_one(document, item_id))
+    for id in document_ids:
+        document = await selectors.find_document(id=id)
+        coros.append(load_one(document))
         
     return await asyncio.gather(*coros)
 
-async def load_one(document: Document, item_id: int) -> dict:
+async def load_one(document: Document) -> dict:
     try:
         content = await services.load_document_content(document=document)
         return asdict(LoadResult(
             document_id=document.id,
-            item_id=item_id,
             content=content,
             ok=True,
         ))
     except Exception as exc:
         return asdict(LoadResult(
             document_id=document.id,
-            item_id=item_id,
             content=None,
             ok=False,
             error=traceback.format_exc(exc),
