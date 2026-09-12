@@ -218,16 +218,27 @@ async def chunk_stage():
             )
             logger.info(f"chunk failed for {res.document_id}, error: {res.error}")
             
-async def move_to_classification_stage():
-    items = await queue.dequeue_for_waiting_for_classification()
-    for item in items:
-        chunk_count = await selectors.count_document_chunks_by_document(document_id=item.document_id)
+async def transition_to_classification_stage():
+    documents = await document_pipeline.fetch(
+        stage=document_pipeline.Stage.CHUNK,
+        stage_status=document_pipeline.StageStatus.DONE,
+    )
+    for document in documents:
+        chunk_count = await selectors.count_document_chunks_by_document(document_id=document.id)
         if chunk_count is None or chunk_count == 0:
-            await queue.mark_chunk_failed(item=item, error="no chunks were created")
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error="no chunks were created"
+            )
+            logger.error(f"no chunks were created for document {document.id}")
             continue
         
-        await queue.mark_waiting_for_classification(item=item)
-        logger.info(f"item {item.id} marked as waiting for classification")            
+        await document_pipeline.transition_to_next_stage(
+            document_id=document.id,
+            current_stage=document_pipeline.Stage.CHUNK,
+        )
+        logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CLASSIFY} stage")            
             
 async def classification_stage():
     items = await queue.dequeue_for_classification()
