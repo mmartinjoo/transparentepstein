@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from enum import Enum, auto
 from psycopg.rows import class_row
 
@@ -19,6 +20,19 @@ class StageStatus(Enum):
     DONE = auto()
     FAILED = auto()
     
+@dataclass
+class DocumentPipeline:
+    id: int
+    document_id: int
+    stage: Stage
+    stage_status: StageStatus
+    
+    def __post_init__(self):
+        if isinstance(self.stage_status, str):
+            self.stage_status = StageStatus[self.stage_status]
+        if isinstance(self.stage, str):
+            self.stage = Stage[self.stage]
+    
 async def initialize(document: Document):
     await db.insert(
         query="""
@@ -34,6 +48,23 @@ async def initialize(document: Document):
     
 async def mark_many(document_ids: list[int], stage_status: StageStatus):
     in_clause = ','.join(['%s'] * len(document_ids))
+    
+    doc_pipelines: list[DocumentPipeline] = await db.select_many(
+        query=f"""
+            select id, document_id, stage, stage_status
+            from ops.document_pipeline
+            where document_id in ({in_clause})
+        """,
+        inputs=document_ids,
+        row_factory=class_row(DocumentPipeline)
+    )
+    
+    for doc_pipeline in doc_pipelines:
+        guard_stage_status_change(
+            from_status=doc_pipeline.stage_status,
+            to_status=stage_status,
+        )
+    
     await db.update(
         query=f"""
             update ops.document_pipeline
@@ -49,6 +80,24 @@ async def mark_many(document_ids: list[int], stage_status: StageStatus):
     )
     
 async def mark_one(document_id: int, stage_status: StageStatus, error: str | None = None):
+    doc_pipeline: DocumentPipeline = await db.select_one(
+        query="""
+            select id, document_id, stage, stage_status
+            from ops.document_pipeline
+            where document_id = %s
+            limit 1
+        """,
+        inputs=[
+            document_id,
+        ],
+        row_factory=class_row(DocumentPipeline)
+    )
+    
+    guard_stage_status_change(
+        from_status=doc_pipeline.stage_status,
+        to_status=stage_status,
+    )
+    
     await db.update(
         query=f"""
             update ops.document_pipeline
@@ -64,6 +113,26 @@ async def mark_one(document_id: int, stage_status: StageStatus, error: str | Non
             document_id,
         ],
     )
+    
+def guard_stage_status_change(from_status: StageStatus, to_status: StageStatus):
+    transitions = {
+        StageStatus.PENDING: [StageStatus.IN_PROGRESS],
+        StageStatus.IN_PROGRESS: [StageStatus.FAILED, StageStatus.DONE],
+        StageStatus.FAILED: [StageStatus.IN_PROGRESS],
+    }
+    
+    try:
+        to_statuses = transitions[from_status]
+    except KeyError:
+        raise StageStatusTransitionError(f"invalid status: {from_status}")
+    
+    try:
+        to_statuses.index(to_status)
+    except ValueError:
+        raise StageStatusTransitionError(f"invalid status transition from {from_status} to {to_status}")
+
+class StageStatusTransitionError(Exception):
+    pass
     
 class StageTransitionError(Exception):
     pass

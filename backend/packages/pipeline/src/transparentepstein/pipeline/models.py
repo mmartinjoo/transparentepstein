@@ -12,3 +12,4 @@ class Document():
     main_classification_label: str | None = None
     s3_key: str | None = None
     content: str | None = None
+    
