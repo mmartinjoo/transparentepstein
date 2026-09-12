@@ -241,22 +241,23 @@ async def transition_to_classification_stage():
         logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CLASSIFY} stage")            
             
 async def classification_stage():
-    items = await queue.dequeue_for_classification()
-    batch_size = len(items) // 5
+    documents = await queue.dequeue(stage=document_pipeline.Stage.CLASSIFY)
+    batch_size = len(documents) // 5
     results: list[ClassificationResult] = []
     
     for i in range(5):
         start = i * batch_size
-        batch = items[start:start + batch_size]
+        batch = documents[start:start + batch_size]
         
-        await queue.mark_classifying(items=batch)
+        document_ids = [d.id for d in documents]
+        await document_pipeline.mark_many(
+            document_ids=document_ids,
+            stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+        )
         
         context = {}
-        for item in batch:
-            context[item.id] = {
-                "document_id": item.document_id,
-                "document_content": await selectors.fetch_document_content(id=item.document_id),
-            }
+        for document in batch:
+            context[document.id] = document.content
         
         task_result = classify_task.delay(context)
                 
@@ -267,18 +268,26 @@ async def classification_stage():
     for res in results:
         if res.ok:
             if res.label is None:
-                await queue.mark_classification_failed(item_id=res.item_id, error="empty label")
-                logger.info(f"classification failed for {res.document_id}, error: empty label")
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error="empty label",
+                )
+                logger.error(f"classification failed for document {res.document_id}, error: empty label")
                 continue
             
             label = ClassificationLabel[res.label]
             
-            item = await queue.find_item(id=res.item_id)
             await classification_services.update_document_main_classification_label(document_id=res.document_id, label=label)
-            await queue.mark_classified(
-                item=item,
+            await document_pipeline.mark_one(
+                document_id=res.document_id,
+                stage_status=document_pipeline.StageStatus.DONE,
             )
             logger.info(f"document {res.document_id} classified as {res.label}")
         else:
-            await queue.mark_classification_failed(item_id=res.item_id, error=res.error)
-            logger.info(f"classification failed for {res.document_id}, error: {res.error}")
+            await document_pipeline.mark_one(
+                document_id=res.document_id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"classification failed for {res.document_id}, error: {res.error}",
+            )
+            logger.error(f"classification failed for {res.document_id}, error: {res.error}")
