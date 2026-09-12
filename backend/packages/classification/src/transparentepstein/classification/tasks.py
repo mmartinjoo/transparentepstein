@@ -19,16 +19,17 @@ class ClassificationResult():
 
 @celery.app.task
 def classify(context: dict[str, dict[str, any]]):
-    return asyncio.run(async_classify(context))
-
-async def async_classify(context: dict) -> list[dict]:
-    coros = []
     for item_id in context.keys():
         assert "document_id" in context[item_id]
         assert "document_content" in context[item_id]
         assert context[item_id]["document_id"] is not None
         assert context[item_id]["document_content"] is not None
-        
+
+    return asyncio.run(async_classify(context))
+
+async def async_classify(context: dict) -> list[dict]:
+    coros = []
+    for item_id in context.keys():
         document_id = context[item_id]["document_id"]
         document_content = context[item_id]["document_content"]
         
