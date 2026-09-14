@@ -1,13 +1,16 @@
 import asyncio
+from dataclasses import asdict
 import logging
 from pprint import pprint
+import traceback
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
-from transparentepstein.ingestion import selectors, scraper, queue, tasks, services
+from transparentepstein.ingestion import selectors, scraper, tasks, services
 from transparentepstein.classification import services as classification_services
-from transparentepstein.core import storage
-from transparentepstein.classification.tasks import classify as classify_task
-from transparentepstein.classification.tasks import ClassificationResult
+from transparentepstein.pipeline.services import update_data_set_processed_until, update_document_s3_key
+from transparentepstein.core import db, storage
+from transparentepstein.classification.tasks import classify as classify_task, ClassificationRequest, ClassificationResponse
+from transparentepstein.pipeline import document_queue, document_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -24,201 +27,380 @@ async def discover_stage():
     urls = await scraper.discover(data_set=data_set, page=next_page)
     if len(urls) == 0:
         raise NothingToDiscoverError(f"zero URLs discovered for {data_set.name} at page {next_page}")
-    
-    await queue.enqueue_urls(
-        urls=urls,
-        data_set_id=data_set.id,
-    )
+
+    for url in urls:
+        async with db.transaction():
+            document = await services.create_document(
+                url=url,
+                data_set_id=data_set.id,
+            )
+            logger.info(f"document created {document.id}")
+            
+            await document_queue.enqueue(document=document)
+            await document_pipeline.initialize(document)
+            await update_data_set_processed_until(data_set_id=data_set.id)
     
     logger.info(f"discovered {len(urls)} URLs on page {next_page}")
     
 async def fetch_stage():
-    items = await queue.dequeue_for_fetch()
-    logger.info(f"fetching {len(items)} URLs")
-    
-    batch_size = len(items) // 5
-    results: list[tasks.FetchResult] = []
-    
-    for i in range(5):
-        start = i * batch_size
-        batch = items[start:start + batch_size]        
-        
-        await queue.mark_fetching(items=batch)
-        
-        task_result = tasks.fetch.delay([item.id for item in batch])
-        
-        fetch_results: list[tasks.FetchResult] = [tasks.FetchResult(**v) for v in task_result.get()]
-        for r in fetch_results:
-            results.append(r)
-        
-    for res in results:
-        if res.ok:
-            item = await queue.find_item(id=res.item_id)
-            document = await services.create_document(
-                url=res.url,
-                s3_key=res.s3_key,
-                data_set_id=item.data_set_id,
-            )
-            await queue.mark_fetched(
-                item=item, 
-                document=document,
-            )
-            logger.info(f"document {document.id} fetched from {document.url}")
-        else:
-            await queue.mark_fetch_failed(item_id=res.item_id, error=res.error)
-            logger.error(f"fetch failed at {res.url}, error: {res.error}")
-            
-async def move_to_load_stage():
-    items = await queue.dequeue_for_waiting_for_load()
-    for item in items:
-        document = await selectors.find_document(id=item.document_id)
+    async with db.transaction():
+        documents = await document_queue.claim(stage=document_pipeline.Stage.FETCH)
+        logger.info(f"fetching {len(documents)} documents")
 
-        exists = await asyncio.to_thread(storage.exists, key=document.s3_key)
-        if not exists:
-            await queue.mark_fetch_failed(item=item, error=f"S3 object does not exist at {document.s3_key}")
-            logger.error(f"item {item.id} marked as failed: S3 object does not exist")
-            continue
-            
-        empty = await asyncio.to_thread(storage.empty, key=document.s3_key)
-        if empty:
-            await queue.mark_fetch_failed(item=item, error=f"S3 object exists but empty at {document.s3_key}")
-            logger.error(f"item {item.id} marked as failed: S3 object is empty")
-            continue
-
-        await queue.mark_waiting_for_load(item=item)
-        logger.info(f"item {item.id} marked as waiting for load")
-            
-async def load_stage():
-    items = await queue.dequeue_for_load()
-    batch_size = len(items) // 5
-    results: list[tasks.LoadResult] = []
+        await document_pipeline.mark_many(
+            document_ids=[d.id for d in documents],
+            stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+        )
+        logger.info(f"marked {len(documents)} documents as in progress")
     
-    for i in range(5):
-        start = i * batch_size
-        batch = items[start:start + batch_size]
+        task_results: list[dict] = []
+        for document in documents:
+            try:
+                task_result = tasks.fetch.delay(asdict(document))
+                task_results.append(task_result.get())
+            except Exception as exc:
+                await document_pipeline.mark_one(
+                    document_id=document.id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"task failed: {repr(exc)}",
+                )
+                logger.error(exc)
+                raise
         
-        await queue.mark_loading(items=batch)
-        
-        task_result = tasks.load.delay([item.id for item in batch])
-                
-        load_results: list[tasks.LoadResult] = [tasks.LoadResult(**v) for v in task_result.get()]
-        for r in load_results:
-            results.append(r)
-    
+    results = [tasks.FetchResponse(**r) for r in task_results]
     for res in results:
-        if res.ok:
-            if res.content is None:
-                await queue.mark_load_failed(item_id=res.item_id, error="empty content")
-                logger.info(f"load failed for {res.document_id}, error: empty content")
+        try:
+            async with db.transaction():
+                if res.ok:
+                    await update_document_s3_key(document_id=res.document_id, s3_key=res.s3_key)
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id, 
+                        stage_status=document_pipeline.StageStatus.DONE,
+                    )
+                    logger.info(f"document {res.document_id} fetched with S3 key {res.s3_key}")
+                else:
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=res.error,
+                    )
+                    logger.error(f"fetch failed for {res.document_id}, error: {res.error}")
+        except Exception as exc:
+            # fresh txn: previous one already rolled back
+            async with db.transaction():
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=traceback.format_exc(exc),
+                )
+                logger.error(f"fetch failed for document {res.document_id}: {exc}")
+    
+async def transition_to_load_stage():
+    documents = await document_pipeline.fetch(
+        stage=document_pipeline.Stage.FETCH,
+        stage_status=document_pipeline.StageStatus.DONE,
+    )
+    
+    for document in documents:
+        try:
+            exists = await asyncio.to_thread(storage.exists, key=document.s3_key)
+            if not exists:
+                await document_pipeline.mark_one(
+                    document_id=document.id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"S3 object does not exist at {document.s3_key} for document {document.id}",
+                )
+                logger.error(f"S3 object does not exist at {document.s3_key} for document {document.id}")
                 continue
-            
-            item = await queue.find_item(id=res.item_id)
-            await services.update_document_content(document_id=res.document_id, content=res.content)
-            await queue.mark_loaded(
-                item=item, 
-            )
-            logger.info(f"document {res.document_id} loaded")
-        else:
-            await queue.mark_load_failed(item_id=res.item_id, error=res.error)
-            logger.info(f"load failed for {res.document_id}, error: {res.error}")
-            
-async def move_to_chunk_stage():
-    items = await queue.dequeue_for_waiting_for_chunk()
-    for item in items:
-        document = await selectors.find_document(id=item.document_id)
+                
+            empty = await asyncio.to_thread(storage.empty, key=document.s3_key)
+            if empty:
+                await document_pipeline.mark_one(
+                    document_id=document.id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"S3 object exists but empty for document {document.id} at {document.s3_key}",
+                )
+                logger.error(f"S3 object exists but empty for document {document.id} at {document.s3_key}")
+                continue
 
-        if document.content is None or len(document.content) == 0:
-            await queue.mark_load_failed(item=item, error=f"content is empty for {document.id}")
-            logger.error(f"item {item.id} marked as failed: content is empty")
-            continue
+            await document_pipeline.transition_to_next_stage(
+                document_id=document.id,
+                current_stage=document_pipeline.Stage.FETCH,
+            )
+            logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.LOAD}")
+        except Exception as exc:
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"transition to load stage failed: {traceback.format_exc(exc)}",
+            )
+            logger.error(f"transition to load stage failed: {exc}")
+          
+async def load_stage():
+    async with db.transaction():
+        documents = await document_queue.claim(stage=document_pipeline.Stage.LOAD)
+        batch_size = len(documents) // 5
+        results: list[tasks.LoadResponse] = []
+        
+        for i in range(5):
+            start = i * batch_size
+            batch = documents[start:start + batch_size]
+            document_ids = [d.id for d in batch]
+
+            await document_pipeline.mark_many(
+                document_ids=document_ids,
+                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+            )
             
-        await queue.mark_waiting_for_chunk(item=item)
-        logger.info(f"item {item.id} marked as waiting for chunk")            
+            try:
+                task_result = tasks.load.delay([asdict(d) for d in batch])
+                load_results: list[tasks.LoadResponse] = [tasks.LoadResponse(**v) for v in task_result.get()]
+                for r in load_results:
+                    results.append(r)
+            except Exception as exc:
+                await document_pipeline.mark_many(
+                    document_ids=[d.id for d in batch],
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"load task failed: {traceback.format_exc(exc)}",
+                )
+                logger.error(f"load task failed: {exc}")
+                logger.warning(f"marked {len(batch)} documents as failed")
+                
+    for res in results:
+        try:
+            async with db.transaction():
+                if res.ok:
+                    if res.content is None:
+                        await document_pipeline.mark_one(
+                            document_id=res.document_id,
+                            stage_status=document_pipeline.StageStatus.FAILED,
+                            error=f"empty content"
+                        )
+                        logger.error(f"load failed for {res.document_id}, error: empty content")
+                        continue
+                    
+                    await services.update_document_content(document_id=res.document_id, content=res.content)
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.DONE,
+                    )
+                    logger.info(f"document {res.document_id} loaded")
+                else:
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=res.error
+                    )
+                    logger.error(f"load failed for {res.document_id}, error: {res.error}")
+        except Exception as exc:
+            # fresh txn: previous one already rolled back
+            async with db.transaction():
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"load failed: {traceback.format_exc(exc)}",
+                )
+                logger.error(f"load failed for document {res.document_id}: {exc}")
+            
+async def transition_to_chunk_stage():
+    documents = await document_pipeline.fetch(
+        stage=document_pipeline.Stage.LOAD,
+        stage_status=document_pipeline.StageStatus.DONE,
+    )
+    for document in documents:
+        try:
+            if document.content is None or len(document.content) == 0:
+                await document_pipeline.mark_one(
+                    document_id=document.id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"content is empty for {document.id}"
+                )
+                logger.error(f"document {document.id} marked as failed: content is empty")
+                continue
+                
+            await document_pipeline.transition_to_next_stage(
+                document_id=document.id,
+                current_stage=document_pipeline.Stage.LOAD,
+            )
+            logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CHUNK} stage")            
+        except Exception as exc:
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"transition to chunk stage failed: {traceback.format_exc(exc)}",
+            )
+            logger.error(f"transition to chunk stage failed: {exc}")
 
 async def chunk_stage():
-    items = await queue.dequeue_for_chunk()
-    batch_size = len(items) // 5
-    results: list[tasks.ChunkResult] = []
-    
-    for i in range(5):
-        start = i * batch_size
-        batch = items[start:start + batch_size]
+    async with db.transaction():
+        documents = await document_queue.claim(stage=document_pipeline.Stage.CHUNK)
+        batch_size = len(documents) // 5
+        results: list[tasks.ChunkResponse] = []
+        batches = []
         
-        await queue.mark_chunking(items=batch)
-        
-        task_result = tasks.chunk.delay([item.id for item in batch])
-                
-        load_results: list[tasks.ChunkResult] = [tasks.ChunkResult(**v) for v in task_result.get()]
-        for r in load_results:
-            results.append(r)
+        for i in range(5):
+            start = i * batch_size
+            batch = documents[start:start + batch_size]
+            document_ids = [d.id for d in batch]
+            
+            await document_pipeline.mark_many(
+                document_ids=document_ids,
+                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+            )
+            
+            try:
+                task_result = tasks.chunk.delay([asdict(doc) for doc in batch])
+                load_results: list[tasks.ChunkResponse] = [tasks.ChunkResponse(**v) for v in task_result.get()]
+                for r in load_results:
+                    results.append(r)
+            except Exception as exc:
+                await document_pipeline.mark_many(
+                    document_ids=[d.id for d in batch],
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"task failed: {traceback.format_exc(exc)}",
+                )
+                logger.error(exc)
+                logger.warning(f"marked {len(batch)} documents as failed")
     
     for res in results:
-        if res.ok:
-            if len(res.chunks) == 0:
-                await queue.mark_chunk_failed(item_id=res.item_id, error="empty chunks")
-                logger.info(f"chunk failed for {res.document_id}, error: empty chunks")
+        try:
+            async with db.transaction():
+                if res.ok:
+                    if len(res.chunks) == 0:
+                        await document_pipeline.mark_one(
+                            document_id=res.document_id,
+                            stage_status=document_pipeline.StageStatus.FAILED,
+                            error=f"empty chunks"
+                        )
+                        logger.error(f"chunk failed for {res.document_id}, error: empty chunks")
+                        continue
+                    
+                    await services.create_document_chunks(document_id=res.document_id, chunks=res.chunks)
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.DONE,
+                    )
+                    logger.info(f"document {res.document_id} chunked")
+                else:
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=res.error,
+                    )
+                    logger.info(f"chunk failed for {res.document_id}, error: {res.error}")
+        except Exception as exc:
+            # fresh txn: previous one already rolled back
+            async with db.transaction():
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"chunk failed: {traceback.format_exc(exc)}",
+                )
+                logger.error(f"chunk failed for document {res.document_id}: {exc}")
+            
+async def transition_to_classification_stage():
+    documents = await document_pipeline.fetch(
+        stage=document_pipeline.Stage.CHUNK,
+        stage_status=document_pipeline.StageStatus.DONE,
+    )
+    
+    for document in documents:
+        try:
+            chunk_count = await selectors.count_document_chunks_by_document(document_id=document.id)
+            if chunk_count is None or chunk_count == 0:
+                await document_pipeline.mark_one(
+                    document_id=document.id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error="no chunks were created"
+                )
+                logger.error(f"no chunks were created for document {document.id}")
                 continue
             
-            item = await queue.find_item(id=res.item_id)
-            await services.create_document_chunks(document_id=res.document_id, chunks=res.chunks)
-            await queue.mark_chunked(
-                item=item,
+            await document_pipeline.transition_to_next_stage(
+                document_id=document.id,
+                current_stage=document_pipeline.Stage.CHUNK,
             )
-            logger.info(f"document {res.document_id} chunked")
-        else:
-            await queue.mark_chunk_failed(item_id=res.item_id, error=res.error)
-            logger.info(f"chunk failed for {res.document_id}, error: {res.error}")
-            
-async def move_to_classification_stage():
-    items = await queue.dequeue_for_waiting_for_classification()
-    for item in items:
-        chunk_count = await selectors.count_document_chunks_by_document(document_id=item.document_id)
-        if chunk_count is None or chunk_count == 0:
-            await queue.mark_chunk_failed(item=item, error="no chunks were created")
-            continue
-        
-        await queue.mark_waiting_for_classification(item=item)
-        logger.info(f"item {item.id} marked as waiting for classification")            
+            logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.CLASSIFY} stage")            
+        except Exception as exc:
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"transition to classification stage failed: {traceback.format_exc(exc)}",
+            )
+            logger.error(f"transition to classification stage failed: {exc}")
             
 async def classification_stage():
-    items = await queue.dequeue_for_classification()
-    batch_size = len(items) // 5
-    results: list[ClassificationResult] = []
-    
-    for i in range(5):
-        start = i * batch_size
-        batch = items[start:start + batch_size]
+    async with db.transaction():
+        documents = await document_queue.claim(stage=document_pipeline.Stage.CLASSIFY)
+        batch_size = len(documents) // 5
+        results: list[ClassificationResponse] = []
         
-        await queue.mark_classifying(items=batch)
-        
-        context = {}
-        for item in batch:
-            context[item.id] = {
-                "document_id": item.document_id,
-                "document_content": await selectors.fetch_document_content(id=item.document_id),
-            }
-        
-        task_result = classify_task.delay(context)
-                
-        load_results: list[ClassificationResult] = [ClassificationResult(**v) for v in task_result.get()]
-        for r in load_results:
-            results.append(r)
+        for i in range(5):
+            start = i * batch_size
+            batch = documents[start:start + batch_size]
+            
+            document_ids = [d.id for d in batch]
+            await document_pipeline.mark_many(
+                document_ids=document_ids,
+                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+            )
+            
+            requests: list[ClassificationRequest] = []
+            for document in batch:
+                requests.append(asdict(ClassificationRequest(
+                    document_id=document.id,
+                    content=document.content,
+                )))
+            
+            try:
+                task_result = classify_task.delay(requests)                    
+                load_results: list[ClassificationResponse] = [ClassificationResponse(**v) for v in task_result.get()]
+                for r in load_results:
+                    results.append(r)
+            except Exception as exc:
+                await document_pipeline.mark_many(
+                    document_ids=[d.id for d in batch],
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"classify task failed: {traceback.format_exc(exc)}",
+                )
+                logger.error(f"classify task failed: {exc}")
+                logger.warning(f"marked {len(batch)} documents as failed")
     
     for res in results:
-        if res.ok:
-            if res.label is None:
-                await queue.mark_classification_failed(item_id=res.item_id, error="empty label")
-                logger.info(f"classification failed for {res.document_id}, error: empty label")
-                continue
-            
-            label = ClassificationLabel[res.label]
-            
-            item = await queue.find_item(id=res.item_id)
-            await classification_services.update_document_main_classification_label(document_id=res.document_id, label=label)
-            await queue.mark_classified(
-                item=item,
-            )
-            logger.info(f"document {res.document_id} classified as {res.label}")
-        else:
-            await queue.mark_classification_failed(item_id=res.item_id, error=res.error)
-            logger.info(f"classification failed for {res.document_id}, error: {res.error}")
+        try:
+            async with db.transaction():
+                if res.ok:
+                    if res.label is None:
+                        await document_pipeline.mark_one(
+                            document_id=res.document_id,
+                            stage_status=document_pipeline.StageStatus.FAILED,
+                            error="empty label",
+                        )
+                        logger.error(f"classification failed for document {res.document_id}, error: empty label")
+                        continue
+                    
+                    label = ClassificationLabel[res.label]
+                    
+                    await classification_services.update_document_main_classification_label(document_id=res.document_id, label=label)
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.DONE,
+                    )
+                    await document_queue.dequeue(document_id=res.document_id)
+                    logger.info(f"document {res.document_id} classified as {res.label}")
+                else:
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=f"classification failed for {res.document_id}, error: {res.error}",
+                    )
+                    logger.error(f"classification failed for {res.document_id}, error: {res.error}")
+        except Exception as exc:
+            # fresh txn: previous one already rolled back
+            async with db.transaction():
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"classify failed: {traceback.format_exc(exc)}",
+                )
+                logger.error(f"classify failed for document {res.document_id}: {exc}")

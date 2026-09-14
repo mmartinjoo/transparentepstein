@@ -7,24 +7,23 @@ from psycopg.rows import class_row
 from transparentepstein.core import db, storage
 from transparentepstein.ingestion.models import Document
 
-async def create_document(url: str, s3_key: str, data_set_id: int) -> Document:
+async def create_document(url: str, data_set_id: int) -> Document:
     return await db.insert(
         query="""
-            insert into ops.documents(url, s3_key, data_set_id)
-            values(%s, %s, %s)
+            insert into ops.documents(url, data_set_id)
+            values(%s, %s)
             returning *
         """,
         inputs=[
             url,
-            s3_key,
             data_set_id,
         ],
         row_factory=class_row(Document),
         returning=True,
     )
 
-async def load_document_content(document: Document) -> str:
-    data = await asyncio.to_thread(storage.get_file, document.s3_key)
+async def load_document_content(s3_key: str) -> str:
+    data = await asyncio.to_thread(storage.get_file, s3_key)
     doc = await asyncio.to_thread(pymupdf.open, stream=data, filetype="pdf")
     content = await asyncio.to_thread(_load_pages, doc=doc)
     return content
