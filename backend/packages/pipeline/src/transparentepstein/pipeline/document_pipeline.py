@@ -46,7 +46,7 @@ async def initialize(document: Document):
         ]
     )
     
-async def mark_many(document_ids: list[int], stage_status: StageStatus):
+async def mark_many(document_ids: list[int], stage_status: StageStatus, error: str | None = None):
     in_clause = ','.join(['%s'] * len(document_ids))
     
     doc_pipelines: list[DocumentPipeline] = await db.select_many(
@@ -70,11 +70,13 @@ async def mark_many(document_ids: list[int], stage_status: StageStatus):
             update ops.document_pipeline
             set
                 stage_status = %s,
+                error = %s,
                 updated_at = now()
             where document_id in ({in_clause})
         """,
         inputs=[
             stage_status.name,
+            error,
             *[id for id in document_ids]
         ],
     )

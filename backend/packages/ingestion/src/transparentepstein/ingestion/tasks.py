@@ -3,7 +3,6 @@ from dataclasses import dataclass, asdict, field
 import logging
 from pprint import pprint
 import aiohttp
-import traceback
 
 from transparentepstein.core import storage, celery
 from transparentepstein.ingestion import selectors, services
@@ -94,12 +93,12 @@ async def async_fetch(document: Document) -> dict:
             ))
             
         except Exception as exc:
-            logger.info(f"fetch failed for {document.url} with error: {exc}")
+            logger.error(f"fetch failed for {document.url} with error: {exc}")
             return asdict(FetchResponse(
                 document_id=document.id,
                 url=document.url,
                 ok=False,
-                error=traceback.format_exc(exc)
+                error=f"fetch failed: {repr(exc)}",
             ))
             
 async def async_load(documents: list[Document]) -> list[dict]:
@@ -118,11 +117,12 @@ async def load_one(document: Document) -> dict:
             ok=True,
         ))
     except Exception as exc:
+        logger.error(f"load failed for {document.url} with error: {exc}")
         return asdict(LoadResponse(
             document_id=document.id,
             content=None,
             ok=False,
-            error=traceback.format_exc(exc),
+            error=f"load failed: {repr(exc)}",
         ))
         
 async def async_chunk(documents: list[Document]) -> list[dict]:
@@ -144,10 +144,11 @@ async def chunk_one(document: Document) -> dict:
             ok=True,
         ))
     except Exception as exc:
+        logger.error(f"chunk failed for {document.url} with error: {exc}")
         return asdict(ChunkResponse(
             document_id=document.id,
             chunks=[],
             ok=False,
-            error=traceback.format_exc(exc),
+            error=f"chunk failed: {repr(exc)}",
         ))
         

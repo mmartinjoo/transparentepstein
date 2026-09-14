@@ -6,6 +6,9 @@ from transparentepstein.pipeline.models import Document
 
 MAX_ATTEMPTS = 15
 
+class EmptyQueueError(Exception):
+    pass
+
 async def enqueue(document: Document):
     await db.insert(
         query="""
@@ -15,8 +18,8 @@ async def enqueue(document: Document):
         inputs=[document.id],
     )
     
-async def dequeue(stage: Stage) -> list[Document]:
-    return await db.select_many(
+async def claim(stage: Stage) -> list[Document]:
+    documents = await db.select_many(
         query="""
             select documents.*
             from ops.document_queue as queue
@@ -26,6 +29,11 @@ async def dequeue(stage: Stage) -> list[Document]:
             and pipeline.stage_status in (%s, %s)
             and queue.attempts < %s
             and queue.next_attempt_at <= now()
+            or (
+                queue.claimed_until <= now()
+                and pipeline.stage_status = %s
+                and queue.attempts < %s
+            )
             order by queue.queued_at desc
             limit 100
             for update skip locked
@@ -35,11 +43,32 @@ async def dequeue(stage: Stage) -> list[Document]:
             StageStatus.PENDING.name,
             StageStatus.FAILED.name,
             MAX_ATTEMPTS,
+            StageStatus.IN_PROGRESS,
+            MAX_ATTEMPTS,
         ],
         row_factory=class_row(Document),
     )
-
-async def remove(document_id: int):
+    
+    if len(documents) == 0:
+        raise EmptyQueueError()
+    
+    in_clause = ','.join(['%s'] * len(documents))
+    await db.update(
+        query=f"""
+            update ops.document_queue
+            set
+                claimed_at = now(),
+                claimed_until = now() + interval '30 minutes',
+                attempts = attempts + 1,
+                next_attempt_at = now() + interval '1 hour'
+            where id in ({in_clause})
+        """,
+        inputs=[d.id for d in documents],
+    )
+    
+    return documents
+    
+async def dequeue(document_id: int):
     await db.delete(
         query="""
             delete from ops.document_queue
