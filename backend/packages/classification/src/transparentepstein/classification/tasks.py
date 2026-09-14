@@ -42,9 +42,8 @@ async def async_classify(requests: list[ClassificationRequest]) -> list[dict]:
 
 async def classify_one(request: ClassificationRequest) -> dict:
     try:
-        # it's a simple regex classifier so the :500 makes sure that those keywords don't just randomly come up in a long document and gets classified as EMAIL
         classifier = create_classifier(type=ClassifierType.REGEX)
-        label: ClassificationLabel = classifier.classify(content=request.content[:500])
+        label: ClassificationLabel = classifier.classify(content=request.content)
         
         if label is None:
             raise ValueError("classifier returned None")

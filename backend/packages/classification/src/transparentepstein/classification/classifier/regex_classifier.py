@@ -2,13 +2,16 @@ from transparentepstein.classification.classifier.base import ClassificationLabe
 
 class RegexClassifier(Classifier):
     def classify(self, content: str) -> ClassificationLabel:
-        if self.match_email(content[:500]):
+        # it's a simple regex classifier so the :500 makes sure that those keywords don't just randomly come up in a long document and gets classified wrong
+        content_shortened = content[:500]
+        
+        if self.match_email(content_shortened):
             return ClassificationLabel.EMAIL
         
-        if self.match_court_doc(content[:500]):
+        if self.match_court_doc(content_shortened):
             return ClassificationLabel.COURT
         
-        if self.match_financial_doc(content[:500]):
+        if self.match_financial_doc(content_shortened):
             return ClassificationLabel.FINANCIAL
         
         return ClassificationLabel.UNKNOWN
