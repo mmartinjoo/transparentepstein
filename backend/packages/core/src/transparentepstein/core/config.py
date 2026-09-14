@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     
     qdrant_host: str
     qdrant_port: int
+    qdrant_vector_dims: int
     
     redis_url: str
     

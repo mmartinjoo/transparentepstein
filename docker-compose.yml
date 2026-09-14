@@ -59,7 +59,7 @@ services:
       - migrate  
       - redis
       - minio
-      - chroma    
+      - qdrant    
     environment: *env_vars
 
   worker:
@@ -80,7 +80,7 @@ services:
       - migrate  
       - redis
       - minio
-      - chroma    
+      - qdrant    
     environment: *env_vars
 
   migrate:

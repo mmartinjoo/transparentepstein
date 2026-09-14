@@ -2,7 +2,6 @@ import asyncio
 from dataclasses import asdict
 import logging
 from pprint import pprint
-import traceback
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, scraper, tasks, services
@@ -10,6 +9,7 @@ from transparentepstein.classification import services as classification_service
 from transparentepstein.pipeline.services import update_data_set_processed_until, update_document_s3_key
 from transparentepstein.core import db, storage
 from transparentepstein.classification.tasks import classify as classify_task, ClassificationRequest, ClassificationResponse
+from transparentepstein.embedding.tasks import embed, EmbedRequest, EmbedResponse
 from transparentepstein.pipeline import document_queue, document_pipeline
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,7 @@ async def fetch_stage():
                 await document_pipeline.mark_one(
                     document_id=res.document_id,
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=traceback.format_exc(exc),
+                    error=repr(exc),
                 )
                 logger.error(f"fetch failed for document {res.document_id}: {exc}")
     
@@ -132,7 +132,7 @@ async def transition_to_load_stage():
             await document_pipeline.mark_one(
                 document_id=document.id,
                 stage_status=document_pipeline.StageStatus.FAILED,
-                error=f"transition to load stage failed: {traceback.format_exc(exc)}",
+                error=f"transition to load stage failed: {repr(exc)}",
             )
             logger.error(f"transition to load stage failed: {exc}")
           
@@ -161,7 +161,7 @@ async def load_stage():
                 await document_pipeline.mark_many(
                     document_ids=[d.id for d in batch],
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"load task failed: {traceback.format_exc(exc)}",
+                    error=f"load task failed: {repr(exc)}",
                 )
                 logger.error(f"load task failed: {exc}")
                 logger.warning(f"marked {len(batch)} documents as failed")
@@ -198,7 +198,7 @@ async def load_stage():
                 await document_pipeline.mark_one(
                     document_id=res.document_id,
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"load failed: {traceback.format_exc(exc)}",
+                    error=f"load failed: {repr(exc)}",
                 )
                 logger.error(f"load failed for document {res.document_id}: {exc}")
             
@@ -227,7 +227,7 @@ async def transition_to_chunk_stage():
             await document_pipeline.mark_one(
                 document_id=document.id,
                 stage_status=document_pipeline.StageStatus.FAILED,
-                error=f"transition to chunk stage failed: {traceback.format_exc(exc)}",
+                error=f"transition to chunk stage failed: {repr(exc)}",
             )
             logger.error(f"transition to chunk stage failed: {exc}")
 
@@ -257,7 +257,7 @@ async def chunk_stage():
                 await document_pipeline.mark_many(
                     document_ids=[d.id for d in batch],
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"task failed: {traceback.format_exc(exc)}",
+                    error=f"task failed: {repr(exc)}",
                 )
                 logger.error(exc)
                 logger.warning(f"marked {len(batch)} documents as failed")
@@ -294,7 +294,7 @@ async def chunk_stage():
                 await document_pipeline.mark_one(
                     document_id=res.document_id,
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"chunk failed: {traceback.format_exc(exc)}",
+                    error=f"chunk failed: {repr(exc)}",
                 )
                 logger.error(f"chunk failed for document {res.document_id}: {exc}")
             
@@ -325,7 +325,7 @@ async def transition_to_classification_stage():
             await document_pipeline.mark_one(
                 document_id=document.id,
                 stage_status=document_pipeline.StageStatus.FAILED,
-                error=f"transition to classification stage failed: {traceback.format_exc(exc)}",
+                error=f"transition to classification stage failed: {repr(exc)}",
             )
             logger.error(f"transition to classification stage failed: {exc}")
             
@@ -361,7 +361,7 @@ async def classification_stage():
                 await document_pipeline.mark_many(
                     document_ids=[d.id for d in batch],
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"classify task failed: {traceback.format_exc(exc)}",
+                    error=f"classify task failed: {repr(exc)}",
                 )
                 logger.error(f"classify task failed: {exc}")
                 logger.warning(f"marked {len(batch)} documents as failed")
@@ -386,7 +386,6 @@ async def classification_stage():
                         document_id=res.document_id,
                         stage_status=document_pipeline.StageStatus.DONE,
                     )
-                    await document_queue.dequeue(document_id=res.document_id)
                     logger.info(f"document {res.document_id} classified as {res.label}")
                 else:
                     await document_pipeline.mark_one(
@@ -401,6 +400,91 @@ async def classification_stage():
                 await document_pipeline.mark_one(
                     document_id=res.document_id,
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"classify failed: {traceback.format_exc(exc)}",
+                    error=f"classify failed: {repr(exc)}",
                 )
                 logger.error(f"classify failed for document {res.document_id}: {exc}")
+                
+async def transition_to_embedding_stage():
+    documents = await document_pipeline.fetch(
+        stage=document_pipeline.Stage.CLASSIFY,
+        stage_status=document_pipeline.StageStatus.DONE,
+    )
+    
+    for document in documents:
+        try:
+            if document.main_classification_label is None or document.main_classification_label == "":
+                await document_pipeline.mark_one(
+                    document_id=document.id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error="no classification label were detected"
+                )
+                logger.error(f"no classification label were detected {document.id}")
+                continue
+            
+            await document_pipeline.transition_to_next_stage(
+                document_id=document.id,
+                current_stage=document_pipeline.Stage.CLASSIFY,
+            )
+            logger.info(f"document {document.id} transitioned to {document_pipeline.Stage.EMBEDDING} stage")            
+        except Exception as exc:
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"transition to embedding stage failed: {repr(exc)}",
+            )
+            logger.error(f"transition to embedding stage failed: {exc}")
+                
+async def embedding_stage():
+    async with db.transaction():
+        documents = await document_queue.claim(stage=document_pipeline.Stage.EMBEDDING)
+        for document in documents:
+            logger.info(f"embedding document {document.id}")
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+            )
+            
+            chunks = await selectors.fetch_document_chunks(document_id=document.id)
+            request = asdict(EmbedRequest(
+                document_id=document.id,
+                chunks=[{"id": c.id, "content": c.content} for c in chunks],
+            ))
+            
+            try:
+                task_result = embed.delay(request)                    
+                result = EmbedResponse(**task_result.get())
+            except Exception as exc:
+                await document_pipeline.mark_one(
+                    document_id=document.id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"embedding task failed: {repr(exc)}",
+                )
+                logger.error(f"embedding task failed: {exc}")
+                logger.warning(f"marked document {document.id} as failed")
+                continue
+    
+            try:
+                async with db.transaction():
+                    if result.ok:
+                        await document_pipeline.mark_one(
+                            document_id=result.document_id,
+                            stage_status=document_pipeline.StageStatus.DONE,
+                        )
+                        await document_queue.dequeue(document_id=result.document_id)
+                        logger.info(f"document {result.document_id}")
+                    else:
+                        await document_pipeline.mark_one(
+                            document_id=result.document_id,
+                            stage_status=document_pipeline.StageStatus.FAILED,
+                            error=f"embedding failed for {result.document_id}, error: {result.error}",
+                        )
+                        logger.error(f"embedding failed for {result.document_id}, error: {result.error}")
+            except Exception as exc:
+                # fresh txn: previous one already rolled back
+                async with db.transaction():
+                    await document_pipeline.mark_one(
+                        document_id=result.document_id,
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=f"embedding failed: {repr(exc)}",
+                    )
+                    logger.error(f"embedding failed for document {result.document_id}: {exc}")

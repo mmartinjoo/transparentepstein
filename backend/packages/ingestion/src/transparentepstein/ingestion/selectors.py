@@ -30,6 +30,21 @@ async def find_document(id: int) -> Document:
         row_factory=class_row(Document),
     )
     
+async def fetch_document_chunks(document_id: int) -> list[DocumentChunk]:
+    assert document_id is not None
+    
+    return await db.select_many(
+        query="""
+            select *
+            from ops.document_chunks
+            where document_id = %s
+        """,
+        inputs=[
+            document_id,
+        ],
+        row_factory=class_row(DocumentChunk),
+    )
+    
 async def fetch_document_content(id: int) -> str:
     assert id is not None
         
