@@ -121,13 +121,13 @@ services:
     ports:
       - "${POSTGRES_PORT}:5432"
 
-  chroma:
-    image: chromadb/chroma:1.5.10.dev263
+  qdrant:
+    image: qdrant/qdrant:latest
     restart: unless-stopped
     ports:
-      - "8888:8000"
+      - "6333:6333"
     volumes:
-      - chroma_data:/data
+      - qdrant_data:/qdrant/storage
 
   redis:
     image: redis:8.10.1-alpine3.23
@@ -146,6 +146,7 @@ volumes:
   minio_data:
   chroma_data:
   redis_data:
+  qdrant_data:
 
 networks:
   default:

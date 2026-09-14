@@ -25,9 +25,8 @@ class Settings(BaseSettings):
     s3_access_key: str
     s3_secret_key: str
     
-    chroma_host: str
-    chroma_port: int
-    chroma_ssl: bool
+    qdrant_host: str
+    qdrant_port: int
     
     redis_url: str
     

@@ -1,0 +1,23 @@
+[project]
+name = "transparentepstein-embedding"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "martinjoo", email = "martin@martinjoo.dev" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastembed>=0.8.0",
+    "qdrant-client>=1.19.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "transparentepstein.embedding"
+
+[project.scripts]
+classify = "transparentepstein.embedding.main:main"
