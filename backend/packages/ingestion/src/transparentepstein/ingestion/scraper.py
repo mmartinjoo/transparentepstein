@@ -10,24 +10,24 @@ logger = logging.getLogger(__name__)
 class RequestFailedError(Exception):
     pass
 
+HEADERS = {
+    "Accept": "text/html",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "Sec-ch-ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+    "Sec-ch-ua-mobile": "?0",
+    "Sec-ch-ua-platform": '"macOS"',
+    "Sec-fetch-dest": "document",
+    "Sec-fetch-mode": "navigate",
+    "Sec-fetch-site": "none",
+    "Sec-fetch-user": "?1",
+    "Upgrade-insecure-requests": "1",
+}
+
 async def discover(data_set: DataSet, page: int) -> list[str]:
     url = data_set.url + f"?page={page}"
     logger.info(f"discovering {url} for {data_set.name}")
     
-    headers = {
-        "Accept": "text/html",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-        "Sec-ch-ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
-        "Sec-ch-ua-mobile": "?0",
-        "Sec-ch-ua-platform": '"macOS"',
-        "Sec-fetch-dest": "document",
-        "Sec-fetch-mode": "navigate",
-        "Sec-fetch-site": "none",
-        "Sec-fetch-user": "?1",
-        "Upgrade-insecure-requests": "1",
-    }
-    
-    async with aiohttp.ClientSession(headers=headers) as session:        
+    async with aiohttp.ClientSession(headers=HEADERS) as session:        
         async with session.get(url) as response:
             logger.info(f"status code {response.status}")
             
@@ -42,4 +42,13 @@ async def discover(data_set: DataSet, page: int) -> list[str]:
             
             return urls
             
+async def fetch(url: str) -> bytes:
+    # No total timeout since files can be large. Only fail if can't connect or see no data for 60s
+    timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
+    
+    async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:    
+        async with session.get(url) as response:
+            response.raise_for_status()
+            data = await response.read()
             
+        return data

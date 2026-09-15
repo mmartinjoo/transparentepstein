@@ -2,28 +2,12 @@ import asyncio
 from dataclasses import dataclass, asdict, field
 import logging
 from pprint import pprint
-import traceback
-import aiohttp
 
 from transparentepstein.core import storage, celery
 from transparentepstein.ingestion import selectors, services, scraper
 from transparentepstein.ingestion.models import Document, DataSet
 
 logger = logging.getLogger(__name__)
-
-HEADERS = {
-    "Accept": "text/html",
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-    "Sec-ch-ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
-    "Sec-ch-ua-mobile": "?0",
-    "Sec-ch-ua-platform": '"macOS"',
-    "Sec-fetch-dest": "document",
-    "Sec-fetch-mode": "navigate",
-    "Sec-fetch-site": "none",
-    "Sec-fetch-user": "?1",
-    "Upgrade-insecure-requests": "1",
-    "Cookie": "justiceGovAgeVerified=true",
-}
 
 MAX_CONCURRENT_FETCHES = 8
 
@@ -89,50 +73,41 @@ async def async_discover(data_set: DataSet):
             ok=True,
         ))
     except Exception as exc:
-        logger.error(f"discover failed for data set {data_set.id}: {traceback.format_exc(exc)}")
+        logger.error(f"discover failed for data set {data_set.id}: {repr(exc)}")
         return asdict(DiscoverResponse(
             data_set_id=data_set.id,
             ok=False,
-            error=f"discover failed: {traceback.format_exc(exc)}",
+            error=f"discover failed: {repr(exc)}",
         ))
 
 async def async_fetch(document: Document) -> dict:
-    # No total timeout since files can be large. Only fail if can't connect or see no data for 60s
-    timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
-
-    async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:    
-        try:
-            parts = document.url.split("/")
-            filename = parts[-1]            
-            async with session.get(document.url) as response:
-                if response.status != 200:
-                    return asdict(FetchResponse(
-                        document_id=document.id,
-                        url=document.url,
-                        ok=False,
-                        error=f"HTTP error: {response.status}"
-                    ))
-
-                data = await response.read()
-                
-            data_set = await selectors.find_data_set(data_set_id=document.data_set_id)
-            key = await asyncio.to_thread(storage.put_file, data_set.name, filename, data)
-            logger.info(f"saved {len(data)} bytes to \"{key}\"")
-            return asdict(FetchResponse(
-                document_id=document.id,
-                url=document.url,
-                ok=True,
-                s3_key=key,
-            ))
+    try:
+        data = await scraper.fetch(document.url)
+        assert len(data) > 0
+        
+        parts = document.url.split("/")
+        assert len(parts) >= 2
+        
+        filename = parts[-1]
+        assert filename.find(".") != -1            
             
-        except Exception as exc:
-            logger.error(f"fetch failed for {document.url} with error: {exc}")
-            return asdict(FetchResponse(
-                document_id=document.id,
-                url=document.url,
-                ok=False,
-                error=f"fetch failed: {traceback.format_exc(exc)}",
-            ))
+        data_set = await selectors.find_data_set(data_set_id=document.data_set_id)
+        key = await asyncio.to_thread(storage.put_file, data_set.name, filename, data)
+        logger.info(f"saved {len(data)} bytes to \"{key}\"")
+        return asdict(FetchResponse(
+            document_id=document.id,
+            url=document.url,
+            ok=True,
+            s3_key=key,
+        ))
+    except Exception as exc:
+        logger.error(f"fetch failed for {document.url} with error: {exc}")
+        return asdict(FetchResponse(
+            document_id=document.id,
+            url=document.url,
+            ok=False,
+            error=f"fetch failed: {repr(exc)}",
+        ))
             
 async def async_load(documents: list[Document]) -> list[dict]:
     coros = []
@@ -155,7 +130,7 @@ async def load_one(document: Document) -> dict:
             document_id=document.id,
             content=None,
             ok=False,
-            error=f"load failed: {traceback.format_exc(exc)}",
+            error=f"load failed: {repr(exc)}",
         ))
         
 async def async_chunk(documents: list[Document]) -> list[dict]:
@@ -182,6 +157,6 @@ async def chunk_one(document: Document) -> dict:
             document_id=document.id,
             chunks=[],
             ok=False,
-            error=f"chunk failed: {traceback.format_exc(exc)}",
+            error=f"chunk failed: {repr(exc)}",
         ))
         

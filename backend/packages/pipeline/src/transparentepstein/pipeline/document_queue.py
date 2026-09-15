@@ -18,7 +18,7 @@ async def enqueue(document: Document):
         inputs=[document.id],
     )
     
-async def claim(stage: Stage) -> list[Document]:
+async def claim(stage: Stage, n: int = 100) -> list[Document]:
     documents = await db.select_many(
         query="""
             select documents.*
@@ -37,7 +37,7 @@ async def claim(stage: Stage) -> list[Document]:
                 and queue.claimed_until <= now()
             )
             order by queue.queued_at desc
-            limit 100
+            limit %s
             for update of queue skip locked
         """,
         inputs=[
@@ -48,6 +48,7 @@ async def claim(stage: Stage) -> list[Document]:
             stage.name,
             StageStatus.IN_PROGRESS,
             MAX_ATTEMPTS,
+            n,
         ],
         row_factory=class_row(Document),
     )
