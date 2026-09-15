@@ -58,28 +58,36 @@ async def fetch_stage():
     async with db.transaction():
         documents = await document_queue.claim(stage=document_pipeline.Stage.FETCH)
         logger.info(f"fetching {len(documents)} documents")
+        
+        batch_size = len(documents) // 5
+        results: list[tasks.FetchResponse] = []
 
-        await document_pipeline.mark_many(
-            document_ids=[d.id for d in documents],
-            stage_status=document_pipeline.StageStatus.IN_PROGRESS,
-        )
-        logger.info(f"marked {len(documents)} documents as in progress")
+        for i in range(5):
+            start = i * batch_size
+            batch = documents[start:start + batch_size]
+            document_ids = [d.id for d in batch]
+
+            await document_pipeline.mark_many(
+                document_ids=document_ids,
+                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+            )
+            logger.info(f"marked {len(batch)} documents as in progress")
     
-        task_results: list[dict] = []
-        for document in documents:
             try:
-                task_result = tasks.fetch.delay(asdict(document))
-                task_results.append(await asyncio.to_thread(task_result.get))
+                task_result = tasks.fetch.delay([asdict(d) for d in batch])
+                dicts = await asyncio.to_thread(task_result.get)
+                task_results: list[tasks.FetchResponse] = [tasks.FetchResponse(**d) for d in dicts]
+                for r in task_results:
+                    results.append(r)
             except Exception as exc:
-                await document_pipeline.mark_one(
-                    document_id=document.id,
+                await document_pipeline.mark_many(
+                    document_id=document_ids,
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"task failed: {repr(exc)}",
+                    error=f"fetch task failed: {repr(exc)}",
                 )
-                logger.error(exc)
+                logger.error(f"fetch task failed: {repr(exc)}")
                 continue
         
-    results = [tasks.FetchResponse(**r) for r in task_results]
     for res in results:
         try:
             async with db.transaction():

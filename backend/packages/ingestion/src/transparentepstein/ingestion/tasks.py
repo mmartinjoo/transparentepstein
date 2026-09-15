@@ -46,9 +46,9 @@ def discover(data_set: dict):
     return asyncio.run(async_discover(data_set_mapped))
 
 @celery.app.task
-def fetch(document: dict):
-    doc = Document(**document)
-    return asyncio.run(async_fetch(doc))
+def fetch(documents: list[dict]):
+    docs = [Document(**d) for d in documents]
+    return asyncio.run(async_fetch(docs))
 
 @celery.app.task
 def load(documents: list[dict]):
@@ -80,34 +80,40 @@ async def async_discover(data_set: DataSet):
             error=f"discover failed: {repr(exc)}",
         ))
 
-async def async_fetch(document: Document) -> dict:
-    try:
-        data = await scraper.fetch(document.url)
-        assert len(data) > 0
+async def async_fetch(documents: list[Document]) -> list[dict]:
+    semaphore = asyncio.Semaphore(value=MAX_CONCURRENT_FETCHES)
+    coros = [fetch_one(d, semaphore) for d in documents]
+    return await asyncio.gather(*coros)
         
-        parts = document.url.split("/")
-        assert len(parts) >= 2
-        
-        filename = parts[-1]
-        assert filename.find(".") != -1            
+async def fetch_one(document: Document, semaphore: asyncio.Semaphore) -> dict:
+    async with semaphore:
+        try:
+            data = await scraper.fetch(document.url)
+            assert len(data) > 0
             
-        data_set = await selectors.find_data_set(data_set_id=document.data_set_id)
-        key = await asyncio.to_thread(storage.put_file, data_set.name, filename, data)
-        logger.info(f"saved {len(data)} bytes to \"{key}\"")
-        return asdict(FetchResponse(
-            document_id=document.id,
-            url=document.url,
-            ok=True,
-            s3_key=key,
-        ))
-    except Exception as exc:
-        logger.error(f"fetch failed for {document.url} with error: {exc}")
-        return asdict(FetchResponse(
-            document_id=document.id,
-            url=document.url,
-            ok=False,
-            error=f"fetch failed: {repr(exc)}",
-        ))
+            parts = document.url.split("/")
+            assert len(parts) >= 2
+            
+            filename = parts[-1]
+            assert filename.find(".") != -1            
+                
+            data_set = await selectors.find_data_set(data_set_id=document.data_set_id)
+            key = await asyncio.to_thread(storage.put_file, data_set.name, filename, data)
+            logger.info(f"saved {len(data)} bytes to \"{key}\"")
+            return asdict(FetchResponse(
+                document_id=document.id,
+                url=document.url,
+                ok=True,
+                s3_key=key,
+            ))
+        except Exception as exc:
+            logger.error(f"fetch failed for {document.url} with error: {exc}")
+            return asdict(FetchResponse(
+                document_id=document.id,
+                url=document.url,
+                ok=False,
+                error=f"fetch failed: {repr(exc)}",
+            ))
             
 async def async_load(documents: list[Document]) -> list[dict]:
     coros = []
