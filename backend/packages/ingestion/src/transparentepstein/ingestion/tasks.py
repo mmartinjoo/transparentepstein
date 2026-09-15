@@ -46,7 +46,7 @@ def discover(data_set: dict):
     return asyncio.run(async_discover(data_set_mapped))
 
 @celery.app.task
-def fetch(documents: list[dict]):
+def fetch(documents: list[dict]) -> list[dict]:
     docs = [Document(**d) for d in documents]
     return asyncio.run(async_fetch(docs))
 

@@ -55,40 +55,46 @@ async def discover_stage():
                 continue
     
 async def fetch_stage():
-    async with db.transaction():
-        documents = await document_queue.claim(stage=document_pipeline.Stage.FETCH)
-        logger.info(f"fetching {len(documents)} documents")
-        
-        batch_size = len(documents) // 5
-        results: list[tasks.FetchResponse] = []
-
-        for i in range(5):
-            start = i * batch_size
-            batch = documents[start:start + batch_size]
-            document_ids = [d.id for d in batch]
-
-            await document_pipeline.mark_many(
-                document_ids=document_ids,
-                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
-            )
-            logger.info(f"marked {len(batch)} documents as in progress")
+    documents = await document_queue.claim(stage=document_pipeline.Stage.FETCH)
+    logger.info(f"fetching {len(documents)} documents")
     
+    batch_size = len(documents) // 5
+    task_results = []
+
+    for i in range(5):
+        async with db.transaction():            
             try:
-                task_result = tasks.fetch.delay([asdict(d) for d in batch])
-                dicts = await asyncio.to_thread(task_result.get)
-                task_results: list[tasks.FetchResponse] = [tasks.FetchResponse(**d) for d in dicts]
-                for r in task_results:
-                    results.append(r)
-            except Exception as exc:
+                start = i * batch_size
+                batch = documents[start:start + batch_size]
+                document_ids = [d.id for d in batch]
+
                 await document_pipeline.mark_many(
-                    document_id=document_ids,
-                    stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"fetch task failed: {repr(exc)}",
+                    document_ids=document_ids,
+                    stage_status=document_pipeline.StageStatus.IN_PROGRESS,
                 )
-                logger.error(f"fetch task failed: {repr(exc)}")
-                continue
+                logger.info(f"marked {len(batch)} documents as in progress")
         
-    for res in results:
+                task_results.append(tasks.fetch.delay([asdict(d) for d in batch]))
+            except Exception as exc:
+                async with db.transaction():
+                    await document_pipeline.mark_many(
+                        document_id=document_ids,
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=f"fetch task failed for batch: {repr(exc)}",
+                    )
+                    logger.error(f"fetch task failed for batch: {repr(exc)}")
+                    continue
+        
+    results: list[dict] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get) for task_result in task_results]
+    )
+    
+    responses: list[tasks.FetchResponse] = []
+    for r in results:
+        for item in r:
+            responses.append(tasks.FetchResponse(**item))
+            
+    for res in responses:
         try:
             async with db.transaction():
                 if res.ok:
