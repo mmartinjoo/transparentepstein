@@ -8,6 +8,7 @@ from fastembed import TextEmbedding
 from transparentepstein.core import celery, qdrant
 
 logger = logging.getLogger(__name__)
+model = TextEmbedding("BAAI/bge-base-en-v1.5") # 768-dim
 
 class ChunkEntry(TypedDict):
     id: int
@@ -30,22 +31,21 @@ def embed(request: dict):
     return asyncio.run(async_embed(request_mapped))
 
 async def async_embed(request: EmbedRequest):
-    try:
-        model = TextEmbedding("BAAI/bge-base-en-v1.5") # 768-dim
+    try:        
         texts = []
         document_chunk_ids = []
         for chunk_entry in request.chunks:
             texts.append(chunk_entry["content"])
             document_chunk_ids.append(chunk_entry["id"])
             
-            vectors = await asyncio.to_thread(model.embed, texts)
-            await asyncio.to_thread(
-                qdrant.upsert,
-                collection_name="document_chunks",
-                vectors=vectors,
-                document_id=request.document_id,
-                document_chunk_ids=document_chunk_ids
-            )
+        vectors = await asyncio.to_thread(model.embed, texts)
+        await asyncio.to_thread(
+            qdrant.upsert,
+            collection_name="document_chunks",
+            vectors=vectors,
+            document_id=request.document_id,
+            document_chunk_ids=document_chunk_ids
+        )
         
         return asdict(EmbedResponse(
             document_id=request.document_id,

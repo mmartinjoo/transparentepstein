@@ -35,6 +35,6 @@ def upsert(collection_name: str, vectors, document_id: int, document_chunk_ids: 
         ))
     
     client.upsert(
-        collection_name="document_chunks",
+        collection_name=collection_name,
         points=points,
     )

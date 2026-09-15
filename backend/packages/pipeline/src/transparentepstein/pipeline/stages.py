@@ -471,7 +471,7 @@ async def embedding_stage():
                             stage_status=document_pipeline.StageStatus.DONE,
                         )
                         await document_queue.dequeue(document_id=result.document_id)
-                        logger.info(f"document {result.document_id}")
+                        logger.info(f"document {result.document_id} embedded")
                     else:
                         await document_pipeline.mark_one(
                             document_id=result.document_id,
