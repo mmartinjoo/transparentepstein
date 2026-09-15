@@ -65,7 +65,7 @@ async def fetch_stage():
                     error=f"task failed: {repr(exc)}",
                 )
                 logger.error(exc)
-                raise
+                continue
         
     results = [tasks.FetchResponse(**r) for r in task_results]
     for res in results:
@@ -165,6 +165,7 @@ async def load_stage():
                 )
                 logger.error(f"load task failed: {exc}")
                 logger.warning(f"marked {len(batch)} documents as failed")
+                continue
                 
     for res in results:
         try:

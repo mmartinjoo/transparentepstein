@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum, auto
 from psycopg.rows import class_row
 
@@ -64,22 +65,39 @@ async def mark_many(document_ids: list[int], stage_status: StageStatus, error: s
             from_status=doc_pipeline.stage_status,
             to_status=stage_status,
         )
-    
-    await db.update(
-        query=f"""
-            update ops.document_pipeline
-            set
-                stage_status = %s,
-                error = %s,
-                updated_at = now()
-            where document_id in ({in_clause})
-        """,
-        inputs=[
-            stage_status.name,
-            error,
-            *[id for id in document_ids]
-        ],
-    )
+        
+    if stage_status == StageStatus.FAILED:
+        next_attempt_at =  datetime.now() + timedelta(hours=1)
+    else:
+        next_attempt_at = datetime.now()
+        
+    async with db.transaction():
+        await db.update(
+            query=f"""
+                update ops.document_pipeline
+                set
+                    stage_status = %s,
+                    error = %s,
+                    updated_at = now()
+                where document_id in ({in_clause})
+            """,
+            inputs=[
+                stage_status.name,
+                error,
+                *[id for id in document_ids]
+            ],
+        )
+        await db.update(
+            query=f"""
+                update ops.document_queue
+                set next_attempt_at = %s
+                where document_id in ({in_clause})
+            """,
+            inputs=[
+                next_attempt_at,
+                *[id for id in document_ids]
+            ],
+        )
     
 async def mark_one(document_id: int, stage_status: StageStatus, error: str | None = None):
     doc_pipeline: DocumentPipeline = await db.select_one(
@@ -100,21 +118,38 @@ async def mark_one(document_id: int, stage_status: StageStatus, error: str | Non
         to_status=stage_status,
     )
     
-    await db.update(
-        query=f"""
-            update ops.document_pipeline
-            set
-                stage_status = %s,
-                updated_at = now(),
-                error = %s
-            where document_id = %s
-        """,
-        inputs=[
-            stage_status.name,
-            error,
-            document_id,
-        ],
-    )
+    if stage_status == StageStatus.FAILED:
+        next_attempt_at =  datetime.now() + timedelta(hours=1)
+    else:
+        next_attempt_at = datetime.now()
+    
+    async with db.transaction():
+        await db.update(
+            query=f"""
+                update ops.document_pipeline
+                set
+                    stage_status = %s,
+                    error = %s,
+                    updated_at = now()
+                where document_id = %s
+            """,
+            inputs=[
+                stage_status.name,
+                error,
+                document_id,
+            ],
+        )
+        await db.update(
+            query=f"""
+                update ops.document_queue
+                set next_attempt_at = %s
+                where document_id = %s
+            """,
+            inputs=[
+                next_attempt_at,
+                document_id,
+            ],
+        )
     
 def guard_stage_status_change(from_status: StageStatus, to_status: StageStatus):
     transitions = {
