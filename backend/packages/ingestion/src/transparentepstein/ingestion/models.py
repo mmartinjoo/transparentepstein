@@ -9,7 +9,10 @@ class DataSet():
     url: str | None = None
     main_document_type: str | None = None
     max_pages: int | None = None
+    priority: int | None = None
     processed_until_page: int | None = None
+    importance_score: float | None = None
+    last_scraped_at: datetime | None = None
 
 @dataclass
 class Document():

@@ -2,6 +2,26 @@ from psycopg.rows import class_row
 from transparentepstein.ingestion.models import DataSet, Document, DocumentChunk
 from transparentepstein.core import db
 
+async def fetch_next_data_sets(n: int = 3) -> list[DataSet]:
+    return await db.select_many(
+        query="""
+            select      
+                *,
+                coalesce(
+                    round(0.4 * date_part('day', age(now(), last_scraped_at))::numeric, 2)
+                    , 0
+                ) + round(0.6 * (priority::numeric/10), 2) as importance_score
+            from ops.data_sets
+            where processed_until_page < max_pages
+            order by importance_score desc
+            limit %s
+        """,
+        inputs=[
+            n
+        ],
+        row_factory=class_row(DataSet),
+    )
+
 async def find_data_set(data_set_id: int) -> DataSet:
     assert data_set_id is not None
     

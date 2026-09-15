@@ -3,7 +3,6 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 
-from transparentepstein.core import db
 from transparentepstein.ingestion.models import DataSet
 
 logger = logging.getLogger(__name__)

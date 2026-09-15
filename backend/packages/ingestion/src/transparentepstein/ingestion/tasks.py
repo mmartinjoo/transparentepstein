@@ -2,11 +2,12 @@ import asyncio
 from dataclasses import dataclass, asdict, field
 import logging
 from pprint import pprint
+import traceback
 import aiohttp
 
 from transparentepstein.core import storage, celery
-from transparentepstein.ingestion import selectors, services
-from transparentepstein.ingestion.models import Document
+from transparentepstein.ingestion import selectors, services, scraper
+from transparentepstein.ingestion.models import Document, DataSet
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,13 @@ HEADERS = {
 }
 
 MAX_CONCURRENT_FETCHES = 8
+
+@dataclass
+class DiscoverResponse():
+    data_set_id: int
+    ok: bool
+    urls: list[str] | None = None
+    error: str | None = None
 
 @dataclass
 class FetchResponse():
@@ -47,6 +55,11 @@ class ChunkResponse():
     ok: bool
     chunks: list[str] = field(default_factory=lambda: [])
     error: str | None = None
+    
+@celery.app.task
+def discover(data_set: dict):
+    data_set_mapped = DataSet(**data_set)
+    return asyncio.run(async_discover(data_set_mapped))
 
 @celery.app.task
 def fetch(document: dict):
@@ -62,6 +75,26 @@ def load(documents: list[dict]):
 def chunk(documents: list[dict]):
     docs = [Document(**d) for d in documents]
     return asyncio.run(async_chunk(docs))
+
+async def async_discover(data_set: DataSet):
+    try:
+        urls = await scraper.discover(
+            data_set=data_set,
+            page=data_set.processed_until_page + 1,
+        )
+        
+        return asdict(DiscoverResponse(
+            data_set_id=data_set.id,
+            urls=urls,
+            ok=True,
+        ))
+    except Exception as exc:
+        logger.error(f"discover failed for data set {data_set.id}: {traceback.format_exc(exc)}")
+        return asdict(DiscoverResponse(
+            data_set_id=data_set.id,
+            ok=False,
+            error=f"discover failed: {traceback.format_exc(exc)}",
+        ))
 
 async def async_fetch(document: Document) -> dict:
     # No total timeout since files can be large. Only fail if can't connect or see no data for 60s
@@ -98,7 +131,7 @@ async def async_fetch(document: Document) -> dict:
                 document_id=document.id,
                 url=document.url,
                 ok=False,
-                error=f"fetch failed: {repr(exc)}",
+                error=f"fetch failed: {traceback.format_exc(exc)}",
             ))
             
 async def async_load(documents: list[Document]) -> list[dict]:
@@ -122,7 +155,7 @@ async def load_one(document: Document) -> dict:
             document_id=document.id,
             content=None,
             ok=False,
-            error=f"load failed: {repr(exc)}",
+            error=f"load failed: {traceback.format_exc(exc)}",
         ))
         
 async def async_chunk(documents: list[Document]) -> list[dict]:
@@ -149,6 +182,6 @@ async def chunk_one(document: Document) -> dict:
             document_id=document.id,
             chunks=[],
             ok=False,
-            error=f"chunk failed: {repr(exc)}",
+            error=f"chunk failed: {traceback.format_exc(exc)}",
         ))
         

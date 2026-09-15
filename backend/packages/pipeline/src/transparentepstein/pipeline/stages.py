@@ -5,7 +5,7 @@ import logging
 from pprint import pprint
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
-from transparentepstein.ingestion import selectors, scraper, tasks, services
+from transparentepstein.ingestion import selectors, tasks, services
 from transparentepstein.classification import services as classification_services
 from transparentepstein.pipeline.services import update_data_set_processed_until, update_document_s3_key
 from transparentepstein.core import db, storage
@@ -19,29 +19,40 @@ class NothingToDiscoverError(Exception):
     pass
 
 async def discover_stage():
-    data_set = await selectors.find_data_set(data_set_id=13)
-    next_page = data_set.processed_until_page + 1
-    if next_page >= data_set.max_pages:
-        logger.info(f"data set {data_set.id} has been fully processed")
-        return
+    data_sets = await selectors.fetch_next_data_sets(n=3)
+    task_results: list[tasks.DiscoverResponse] = []
     
-    urls = await scraper.discover(data_set=data_set, page=next_page)
-    if len(urls) == 0:
-        raise NothingToDiscoverError(f"zero URLs discovered for {data_set.name} at page {next_page}")
+    for data_set in data_sets:
+        try:
+            task_result = tasks.discover.delay(asdict(data_set))
+            res = await asyncio.to_thread(task_result.get)
+            task_results.append(tasks.DiscoverResponse(**res))
+        except Exception as exc:
+            logger.error(f"discover task failed: {repr(exc)}")
+            continue
 
-    for url in urls:
-        async with db.transaction():
-            document = await services.create_document(
-                url=url,
-                data_set_id=data_set.id,
-            )
-            logger.info(f"document created {document.id}")
-            
-            await document_queue.enqueue(document=document)
-            await document_pipeline.initialize(document)
-            await update_data_set_processed_until(data_set_id=data_set.id)
-    
-    logger.info(f"discovered {len(urls)} URLs on page {next_page}")
+    for task_result in task_results:
+        assert task_result.urls is not None
+        
+        if len(task_result.urls) == 0:
+            logger.warning(f"nothing to discover in data set {task_result.data_set_id}")
+            continue
+
+        for url in task_result.urls:
+            try:
+                async with db.transaction():
+                    document = await services.create_document(
+                        url=url,
+                        data_set_id=data_set.id,
+                    )
+                    logger.info(f"document created {document.id}")
+                
+                    await document_queue.enqueue(document=document)
+                    await document_pipeline.initialize(document)
+                    await update_data_set_processed_until(data_set_id=data_set.id)
+            except Exception as exc:
+                logger.error(f"discover tailed while processing data set {task_result.data_set_id} URLs: {repr(exc)}")
+                continue
     
 async def fetch_stage():
     async with db.transaction():
