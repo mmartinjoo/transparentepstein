@@ -262,6 +262,7 @@ async def chunk_stage():
                 )
                 logger.error(exc)
                 logger.warning(f"marked {len(batch)} documents as failed")
+                continue
     
     for res in results:
         try:
@@ -366,6 +367,7 @@ async def classification_stage():
                 )
                 logger.error(f"classify task failed: {exc}")
                 logger.warning(f"marked {len(batch)} documents as failed")
+                continue
     
     for res in results:
         try:
