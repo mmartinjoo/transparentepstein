@@ -30,19 +30,22 @@ async def claim(stage: Stage) -> list[Document]:
             and queue.attempts < %s
             and queue.next_attempt_at <= now()
             or (
-                queue.claimed_until <= now()
+                pipeline.stage = %s
                 and pipeline.stage_status = %s
                 and queue.attempts < %s
+                and queue.next_attempt_at <= now()
+                and queue.claimed_until <= now()
             )
             order by queue.queued_at desc
             limit 100
-            for update skip locked
+            for update of queue skip locked
         """,
         inputs=[
             stage.name,
             StageStatus.PENDING.name,
             StageStatus.FAILED.name,
             MAX_ATTEMPTS,
+            stage.name,
             StageStatus.IN_PROGRESS,
             MAX_ATTEMPTS,
         ],
@@ -60,8 +63,8 @@ async def claim(stage: Stage) -> list[Document]:
                 claimed_at = now(),
                 claimed_until = now() + interval '30 minutes',
                 attempts = attempts + 1,
-                next_attempt_at = now() + interval '1 hour'
-            where id in ({in_clause})
+                next_attempt_at = now()
+            where document_id in ({in_clause})
         """,
         inputs=[d.id for d in documents],
     )
