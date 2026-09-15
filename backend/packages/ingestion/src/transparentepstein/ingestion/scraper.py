@@ -21,6 +21,7 @@ HEADERS = {
     "Sec-fetch-site": "none",
     "Sec-fetch-user": "?1",
     "Upgrade-insecure-requests": "1",
+    "Cookie": "justiceGovAgeVerified=true",
 }
 
 async def discover(data_set: DataSet, page: int) -> list[str]:
