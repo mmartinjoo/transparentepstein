@@ -150,6 +150,19 @@ async def mark_one(document_id: int, stage_status: StageStatus, error: str | Non
                 document_id,
             ],
         )
+        
+async def set_finished_at(document_id: int, finished_at: datetime):
+    await db.update(
+        query="""
+            update ops.document_pipeline
+            set finished_at = %s
+            where document_id = %s
+        """,
+        inputs=[
+            finished_at,
+            document_id,
+        ],
+    )
     
 def guard_stage_status_change(from_status: StageStatus, to_status: StageStatus):
     transitions = {

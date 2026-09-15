@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import asdict
+from datetime import datetime
 import logging
 from pprint import pprint
 
@@ -57,7 +58,7 @@ async def fetch_stage():
         for document in documents:
             try:
                 task_result = tasks.fetch.delay(asdict(document))
-                task_results.append(task_result.get())
+                task_results.append(await asyncio.to_thread(task_result.get))
             except Exception as exc:
                 await document_pipeline.mark_one(
                     document_id=document.id,
@@ -154,8 +155,9 @@ async def load_stage():
             
             try:
                 task_result = tasks.load.delay([asdict(d) for d in batch])
-                load_results: list[tasks.LoadResponse] = [tasks.LoadResponse(**v) for v in task_result.get()]
-                for r in load_results:
+                dicts: list[dict] = await asyncio.to_thread(task_result.get)
+                task_results: list[tasks.LoadResponse] = [tasks.LoadResponse(**v) for v in dicts]
+                for r in task_results:
                     results.append(r)
             except Exception as exc:
                 await document_pipeline.mark_many(
@@ -251,8 +253,9 @@ async def chunk_stage():
             
             try:
                 task_result = tasks.chunk.delay([asdict(doc) for doc in batch])
-                load_results: list[tasks.ChunkResponse] = [tasks.ChunkResponse(**v) for v in task_result.get()]
-                for r in load_results:
+                dicts: list[dict] = await asyncio.to_thread(task_result.get)
+                task_results: list[tasks.ChunkResponse] = [tasks.ChunkResponse(**v) for v in dicts]
+                for r in task_results:
                     results.append(r)
             except Exception as exc:
                 await document_pipeline.mark_many(
@@ -355,9 +358,10 @@ async def classification_stage():
                 )))
             
             try:
-                task_result = classify_task.delay(requests)                    
-                load_results: list[ClassificationResponse] = [ClassificationResponse(**v) for v in task_result.get()]
-                for r in load_results:
+                task_result = classify_task.delay(requests)       
+                dicts: list[dict] = await asyncio.to_thread(task_result.get)   
+                task_results: list[ClassificationResponse] = [ClassificationResponse(**v) for v in dicts]
+                for r in task_results:
                     results.append(r)
             except Exception as exc:
                 await document_pipeline.mark_many(
@@ -454,8 +458,9 @@ async def embedding_stage():
             ))
             
             try:
-                task_result = embed.delay(request)                    
-                result = EmbedResponse(**task_result.get())
+                task_result = embed.delay(request)     
+                res: dict = await asyncio.to_thread(task_result.get)               
+                result = EmbedResponse(**res)
             except Exception as exc:
                 await document_pipeline.mark_one(
                     document_id=document.id,
@@ -472,6 +477,10 @@ async def embedding_stage():
                         await document_pipeline.mark_one(
                             document_id=result.document_id,
                             stage_status=document_pipeline.StageStatus.DONE,
+                        )
+                        await document_pipeline.set_finished_at(
+                            document_id=result.document_id,
+                            finished_at=datetime.now(),
                         )
                         await document_queue.dequeue(document_id=result.document_id)
                         logger.info(f"document {result.document_id} embedded")
