@@ -36,28 +36,37 @@ class LoadResponse():
 class ChunkResponse():
     document_id: int
     ok: bool
-    chunks: list[str] = field(default_factory=lambda: [])
+    chunk_ids: list[int] = field(default_factory=lambda: [])
     error: str | None = None
     
 @celery.app.task
 def discover(data_set: dict) -> dict:
     data_set_mapped = DataSet(**data_set)
-    return asyncio.run(async_discover(data_set_mapped))
+    return run_task(async_discover(data_set_mapped))
 
 @celery.app.task
 def fetch(documents: list[dict]) -> list[dict]:
     docs = [Document(**d) for d in documents]
-    return asyncio.run(async_fetch(docs))
+    return run_task(async_fetch(docs))
 
 @celery.app.task
 def load(documents: list[dict]):
     docs = [Document(**d) for d in documents]
-    return asyncio.run(async_load(docs))
+    return run_task(async_load(docs))
 
 @celery.app.task
 def chunk(documents: list[dict]):
     docs = [Document(**d) for d in documents]
-    return asyncio.run(async_chunk(docs))
+    return run_task(async_chunk(docs))
+
+def run_task(coro):
+    async def _run():
+        await db.apool()
+        try:
+            return await coro
+        finally:
+            await db.close_apool()
+    return asyncio.run(_run())
 
 async def async_discover(data_set: DataSet) -> dict:
     try:
@@ -159,20 +168,21 @@ async def async_chunk(documents: list[Document]) -> list[dict]:
 
 async def chunk_one(document: Document) -> dict:
     try:
-        if document.content is None or len(document.content) == 0:
-            raise ValueError(f"content is None for document {document.id}")
-        
-        chunks = await asyncio.to_thread(services.chunk_text, text=document.content)
-        return asdict(ChunkResponse(
-            document_id=document.id,
-            chunks=chunks,
-            ok=True,
-        ))
+        async with db.transaction():        
+            if document.content is None or len(document.content) == 0:
+                raise ValueError(f"content is None for document {document.id}")
+            
+            chunks = await asyncio.to_thread(services.chunk_text, text=document.content)
+            chunk_ids = await services.upsert_document_chunks(document_id=document.id, chunks=chunks)
+            return asdict(ChunkResponse(
+                document_id=document.id,
+                chunk_ids=chunk_ids,
+                ok=True,
+            ))
     except Exception as exc:
         logger.error(f"chunk failed for {document.url} with error: {exc}")
         return asdict(ChunkResponse(
             document_id=document.id,
-            chunks=[],
             ok=False,
             error=f"chunk failed: {repr(exc)}",
         ))
