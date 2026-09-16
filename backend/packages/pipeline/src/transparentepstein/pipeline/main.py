@@ -9,9 +9,10 @@ async def async_main():
     try:
         setup_logging()
         # await stages.discover_stage()
+        # await stages.initialize_stage()
         # await stages.fetch_stage()
         # await stages.transition_to_load_stage()
-        await stages.load_stage()
+        # await stages.load_stage()
         # await stages.transition_to_chunk_stage()
         # await stages.chunk_stage()
         # await stages.transition_to_classification_stage()

@@ -15,8 +15,8 @@ x-common-variables: &env_vars
   MISTRAL_API_KEY: ${MISTRAL_API_KEY}
   EMBEDDER_LLM_MODEL: ${EMBEDDER_LLM_MODEL}
   QDRANT_HOST: ${QDRANT_HOST}
-  QDRANT_PORT: ${QDRANT_HOST}
-  QDRANT_VECTOR_DIMS: ${QDRANT_HOST}
+  QDRANT_PORT: ${QDRANT_PORT}
+  QDRANT_VECTOR_DIMS: ${QDRANT_VECTOR_DIMS}
 
 name: transparentepstein
 
@@ -51,7 +51,7 @@ services:
     build:
       context: .
       dockerfile: ./backend/Dockerfile
-    command: sh -c "./wait-for-it.sh postgres:5432 -t 30 && ./wait-for-it.sh redis:6379 && sleep infinity"
+    command: sh -c "./wait-for-it.sh postgres:5432 -t 30 && ./wait-for-it.sh redis:6379 && ./wait-for-it.sh qdrant:6333 && ./wait-for-it.sh minio:9000 && sleep infinity"
     restart: unless-stopped
     volumes:
       - ./backend:/usr/src/app
@@ -69,7 +69,7 @@ services:
     build:
       context: .
       dockerfile: ./backend/Dockerfile
-    command: sh -c "./wait-for-it.sh postgres:5432 -t 30 && ./wait-for-it.sh redis:6379 && make worker"
+    command: sh -c "./wait-for-it.sh postgres:5432 -t 30 && ./wait-for-it.sh redis:6379 && ./wait-for-it.sh qdrant:6333 && ./wait-for-it.sh minio:9000 && make worker"
     deploy:
       mode: replicated
       replicas: 4
@@ -133,7 +133,7 @@ services:
       - qdrant_data:/qdrant/storage
 
   redis:
-    image: redis:8.10.1-alpine3.23
+    image: redis:7.4.11-alpine3.21
     restart: unless-stopped
     ports:
       - "63791:6379"

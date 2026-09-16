@@ -3,7 +3,6 @@ from dataclasses import asdict
 from datetime import datetime
 import logging
 from pprint import pprint
-import traceback
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, tasks, services
@@ -20,41 +19,66 @@ class NothingToDiscoverError(Exception):
     pass
 
 async def discover_stage():
-    data_sets = await selectors.fetch_next_data_sets(n=3)
-    task_results: list[tasks.DiscoverResponse] = []
+    data_sets = await selectors.fetch_next_data_sets(n=5)
+    task_results = []
+    responses: list[tasks.DiscoverResponse] = []
     
     for data_set in data_sets:
         try:
-            task_result = tasks.discover.delay(asdict(data_set))
-            res = await asyncio.to_thread(task_result.get)
-            task_results.append(tasks.DiscoverResponse(**res))
+            task_results.append(tasks.discover.delay(asdict(data_set)))
         except Exception as exc:
-            logger.error(f"discover task failed: {repr(exc)}")
+            logger.error(f"discover task for data set {data_set.id} failed: {repr(exc)}")
             continue
-
-    for task_result in task_results:
-        assert task_result.urls is not None
         
-        if len(task_result.urls) == 0:
-            logger.warning(f"nothing to discover in data set {task_result.data_set_id}")
+    results: list[dict] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get, timeout=120) for task_result in task_results],
+        return_exceptions=True,
+    )
+    
+    for res in results:
+        if isinstance(res, BaseException):
+            logger.error(f"discover failed while collecting results: {repr(res)}")
+            continue
+        
+        try:          
+            responses.append(tasks.DiscoverResponse(**res))
+        except Exception as exc:
+            logger.error(f"discover failed for data set {res["data_set_id"]} while collecting results: {repr(exc)}")
             continue
 
-        for url in task_result.urls:
-            try:
-                async with db.transaction():
-                    document = await services.create_document(
-                        url=url,
-                        data_set_id=data_set.id,
-                    )
-                    logger.info(f"document created {document.id}")
-                
-                    await document_queue.enqueue(document=document)
-                    await document_pipeline.initialize(document)
-                    await update_data_set_processed_until(data_set_id=data_set.id)
-            except Exception as exc:
-                logger.error(f"discover tailed while processing data set {task_result.data_set_id} URLs: {repr(exc)}")
-                continue
+    document_ids = []
+    for res in responses:
+        assert res.data_set_id is not None
+        assert res.document_ids is not None
+        
+        if len(res.document_ids) == 0:
+            logger.warning(f"nothing to discover in data set {res.data_set_id}")
+            continue
+        
+        document_ids.extend(res.document_ids)
+
+        try:
+            await update_data_set_processed_until(data_set_id=res.data_set_id)
+        except Exception as exc:
+            logger.error(f"failed to update data set: {repr(exc)}")
+            continue
+        
+    logger.info(f"discovered {len(document_ids)} documents in {len(data_sets)}")
+    logger.info(f"data set IDs: {[ds.id for ds in data_sets]}")
+    logger.info(f"document IDs: {document_ids}")
     
+async def initialize_stage():
+    documents = await selectors.fetch_uninitialized_documents()
+    for document in documents:
+        try:
+            async with db.transaction():
+                await document_queue.enqueue(document=document)
+                await document_pipeline.initialize(document)
+        except Exception as exc:
+            logger.error(f"initializing document {document.id} failed: {repr(exc)}")
+            continue
+    logger.info(f"initialized {len(documents)} documents")
+
 async def fetch_stage():
     documents = await document_queue.claim(stage=document_pipeline.Stage.FETCH)
     logger.info(f"fetching {len(documents)} documents")
@@ -86,13 +110,17 @@ async def fetch_stage():
                 logger.error(f"fetch failed for batch while dispatching tasks: {repr(exc)}")
                 continue
       
-    results: list[dict] = await asyncio.gather(
-        *[asyncio.to_thread(task_result.get) for task_result in task_results]
+    results: list[list[dict]] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get, timeout=120) for task_result in task_results],
+        return_exceptions=True,
     )
-        
         
     for r in results:
         for item in r:
+            if isinstance(item, BaseException):
+                logger.error(f"fetch failed while collecting results: {repr(item)}")
+                continue
+            
             try:          
                 responses.append(tasks.FetchResponse(**item))
             except Exception as exc:
@@ -201,12 +229,17 @@ async def load_stage():
                     logger.error(f"load failed for batch {i} while dispatching tasks: {repr(exc)}")
                     continue
     
-    results: list[dict] = await asyncio.gather(
-        *[asyncio.to_thread(task_result.get) for task_result in task_results]
+    results: list[list[dict]] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get, timeout=120) for task_result in task_results],
+        return_exceptions=True,
     )
         
     for r in results:
         for item in r:
+            if isinstance(item, BaseException):
+                logger.error(f"load failed while collecting results: {repr(item)}")
+                continue
+            
             try:
                 responses.append(tasks.LoadResponse(**item))
             except Exception as exc:

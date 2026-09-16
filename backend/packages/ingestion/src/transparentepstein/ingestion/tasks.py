@@ -3,7 +3,7 @@ from dataclasses import dataclass, asdict, field
 import logging
 from pprint import pprint
 
-from transparentepstein.core import storage, celery
+from transparentepstein.core import db, storage, celery
 from transparentepstein.ingestion import selectors, services, scraper
 from transparentepstein.ingestion.models import Document, DataSet
 
@@ -15,7 +15,7 @@ MAX_CONCURRENT_FETCHES = 8
 class DiscoverResponse():
     data_set_id: int
     ok: bool
-    urls: list[str] | None = None
+    document_ids: list[int] | None = None
     error: str | None = None
 
 @dataclass
@@ -40,7 +40,7 @@ class ChunkResponse():
     error: str | None = None
     
 @celery.app.task
-def discover(data_set: dict):
+def discover(data_set: dict) -> dict:
     data_set_mapped = DataSet(**data_set)
     return asyncio.run(async_discover(data_set_mapped))
 
@@ -59,18 +59,28 @@ def chunk(documents: list[dict]):
     docs = [Document(**d) for d in documents]
     return asyncio.run(async_chunk(docs))
 
-async def async_discover(data_set: DataSet):
+async def async_discover(data_set: DataSet) -> dict:
     try:
-        urls = await scraper.discover(
-            data_set=data_set,
-            page=data_set.processed_until_page + 1,
-        )
+        # discover the entire page or nothing
+        async with db.transaction():
+            urls = await scraper.discover(
+                data_set=data_set,
+                page=data_set.processed_until_page + 1,
+            )
         
-        return asdict(DiscoverResponse(
-            data_set_id=data_set.id,
-            urls=urls,
-            ok=True,
-        ))
+            document_ids = []
+            for url in urls:
+                document = await services.create_document(
+                    url=url,
+                    data_set_id=data_set.id,
+                )
+                document_ids.append(document.id)
+        
+            return asdict(DiscoverResponse(
+                data_set_id=data_set.id,
+                document_ids=document_ids,
+                ok=True,
+            ))
     except Exception as exc:
         logger.error(f"discover failed for data set {data_set.id}: {repr(exc)}")
         return asdict(DiscoverResponse(

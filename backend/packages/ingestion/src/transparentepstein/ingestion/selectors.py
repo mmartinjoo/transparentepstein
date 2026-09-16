@@ -91,3 +91,15 @@ async def count_document_chunks_by_document(document_id: int) -> int:
         inputs=[document_id],
     )
     return int(res["count"])
+
+async def fetch_uninitialized_documents() -> list[Document]:
+    return await db.select_many(
+        query="""
+            select docs.*
+            from ops.documents as docs
+            left join ops.document_queue as queue on queue.document_id = docs.id
+            where queue.id is null
+        """,
+        inputs=[],
+        row_factory=class_row(Document),
+    )
