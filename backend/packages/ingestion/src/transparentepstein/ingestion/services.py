@@ -2,7 +2,7 @@ import asyncio
 from typing import TypeAlias
 from pprint import pprint
 import pymupdf
-from psycopg.rows import class_row
+from psycopg.rows import class_row, dict_row
 
 from transparentepstein.core import db, storage
 from transparentepstein.ingestion.models import Document
@@ -43,21 +43,34 @@ async def update_document_content(document_id: int, content: str):
         ],
     )
     
-async def create_document_chunks(document_id: int, chunks: list[str]):
+async def upsert_document_chunks(document_id: int, chunks: list[str]) -> list[int]:
     assert len(chunks) != 0
     
+    ids = []
+    
     for idx, chunk in enumerate(chunks):
-        await db.insert(
+        row = await db.insert(
             query="""
                 insert into ops.document_chunks(document_id, position, content, created_at)
                 values(%s, %s, %s, now())
+                on conflict (document_id, position) 
+                do update set
+                    content = %s
+                returning id
             """,
             inputs=[
                 document_id,
                 idx,
                 chunk,
-            ]
+                chunk,
+            ],
+            returning=True,
+            row_factory=dict_row,
         )
+        
+        ids.append(row["id"])
+
+    return ids
 
 def _load_pages(doc) -> str:
     content: str = ""

@@ -5,7 +5,7 @@ from typing import TypedDict
 
 from fastembed import TextEmbedding
 
-from transparentepstein.core import celery, qdrant
+from transparentepstein.core import celery, qdrant, db
 
 logger = logging.getLogger(__name__)
 model = TextEmbedding("BAAI/bge-base-en-v1.5") # 768-dim
@@ -28,7 +28,16 @@ class EmbedResponse():
 @celery.app.task
 def embed(request: dict):
     request_mapped = EmbedRequest(**request)
-    return asyncio.run(async_embed(request_mapped))
+    return run_task(async_embed(request_mapped))
+
+def run_task(coro):
+    async def _run():
+        await db.apool()
+        try:
+            return await coro
+        finally:
+            await db.close_apool()
+    return asyncio.run(_run())
 
 async def async_embed(request: EmbedRequest):
     try:        

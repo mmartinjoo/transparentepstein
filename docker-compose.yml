@@ -115,6 +115,13 @@ services:
   postgres:
     image: postgres:18.6
     restart: unless-stopped
+    command: >
+      postgres
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c wal_compression=on
+      -c checkpoint_timeout=15min
+      -c max_wal_size=2GB
     environment:
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
       PGDATA: /var/lib/postgresql/data/pgdata

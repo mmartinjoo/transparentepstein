@@ -5,7 +5,7 @@ import logging
 from pprint import pprint
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
-from transparentepstein.ingestion import selectors, tasks, services
+from transparentepstein.ingestion import selectors, tasks
 from transparentepstein.classification import services as classification_services
 from transparentepstein.pipeline.services import update_data_set_processed_until, update_document_s3_key
 from transparentepstein.core import db, storage
@@ -31,7 +31,7 @@ async def discover_stage():
             continue
         
     results: list[dict] = await asyncio.gather(
-        *[asyncio.to_thread(task_result.get, timeout=120) for task_result in task_results],
+        *[asyncio.to_thread(task_result.get, timeout=300) for task_result in task_results],
         return_exceptions=True,
     )
     
@@ -107,11 +107,11 @@ async def fetch_stage():
                     stage_status=document_pipeline.StageStatus.FAILED,
                     error=f"fetch failed for batch {i} while dispatching tasks: {repr(exc)}",
                 )
-                logger.error(f"fetch failed for batch while dispatching tasks: {repr(exc)}")
+                logger.error(f"fetch failed for batch {i} while dispatching tasks: {repr(exc)}")
                 continue
       
     results: list[list[dict]] = await asyncio.gather(
-        *[asyncio.to_thread(task_result.get, timeout=120) for task_result in task_results],
+        *[asyncio.to_thread(task_result.get, timeout=300) for task_result in task_results],
         return_exceptions=True,
     )
         
@@ -206,31 +206,31 @@ async def load_stage():
     responses: list[tasks.LoadResponse] = []
     
     for i in range(5):
-            try:
-                async with db.transaction():                
-                    start = i * batch_size
-                    batch = documents[start:start + batch_size]
-                    document_ids = [d.id for d in batch]
+        try:
+            async with db.transaction():                
+                start = i * batch_size
+                batch = documents[start:start + batch_size]
+                document_ids = [d.id for d in batch]
 
-                    await document_pipeline.mark_many(
-                        document_ids=document_ids,
-                        stage_status=document_pipeline.StageStatus.IN_PROGRESS,
-                    )
-                    logger.info(f"marked {len(batch)} documents as in progress")
-                    task_results.append(tasks.load.delay([asdict(d) for d in batch]))
-            except Exception as exc:
-                # fresh txn: previous one already rolled back
-                async with db.transaction():
-                    await document_pipeline.mark_many(
-                        document_ids=[d.id for d in batch],
-                        stage_status=document_pipeline.StageStatus.FAILED,
-                        error=f"load failed for batch {i} while dispatching tasks: {repr(exc)}",
-                    )
-                    logger.error(f"load failed for batch {i} while dispatching tasks: {repr(exc)}")
-                    continue
+                await document_pipeline.mark_many(
+                    document_ids=document_ids,
+                    stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+                )
+                logger.info(f"marked {len(batch)} documents as in progress")
+                task_results.append(tasks.load.delay([asdict(d) for d in batch]))
+        except Exception as exc:
+            # fresh txn: previous one already rolled back
+            async with db.transaction():
+                await document_pipeline.mark_many(
+                    document_ids=[d.id for d in batch],
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"load failed for batch {i} while dispatching tasks: {repr(exc)}",
+                )
+                logger.error(f"load failed for batch {i} while dispatching tasks: {repr(exc)}")
+                continue
     
     results: list[list[dict]] = await asyncio.gather(
-        *[asyncio.to_thread(task_result.get, timeout=120) for task_result in task_results],
+        *[asyncio.to_thread(task_result.get, timeout=300) for task_result in task_results],
         return_exceptions=True,
     )
         
@@ -249,6 +249,7 @@ async def load_stage():
                     error=f"load failed while collecting results: {repr(exc)}",
                 )
                 logger.error(f"load failed for document {item["document_id"]} while collecting results: {repr(exc)}, results: {item}")
+                continue
     
     for res in responses:
         try:
@@ -306,52 +307,63 @@ async def transition_to_chunk_stage():
             logger.error(f"transition to chunk stage failed: {exc}")
 
 async def chunk_stage():
-    async with db.transaction():
-        documents = await document_queue.claim(stage=document_pipeline.Stage.CHUNK)
-        batch_size = len(documents) // 5
-        results: list[tasks.ChunkResponse] = []
-        batches = []
-        
-        for i in range(5):
-            start = i * batch_size
-            batch = documents[start:start + batch_size]
-            document_ids = [d.id for d in batch]
-            
-            await document_pipeline.mark_many(
-                document_ids=document_ids,
-                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
-            )
-            
-            try:
-                task_result = tasks.chunk.delay([asdict(doc) for doc in batch])
-                dicts: list[dict] = await asyncio.to_thread(task_result.get)
-                task_results: list[tasks.ChunkResponse] = [tasks.ChunkResponse(**v) for v in dicts]
-                for r in task_results:
-                    results.append(r)
-            except Exception as exc:
-                await document_pipeline.mark_many(
-                    document_ids=[d.id for d in batch],
-                    stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"task failed: {repr(exc)}",
-                )
-                logger.error(exc)
-                logger.warning(f"marked {len(batch)} documents as failed")
-                continue
+    documents = await document_queue.claim(stage=document_pipeline.Stage.CHUNK)
+    batch_size = len(documents) // 5
+    task_results = []
+    responses: list[tasks.ChunkResponse] = []
     
-    for res in results:
+    for i in range(5):
         try:
             async with db.transaction():
+                start = i * batch_size
+                batch = documents[start:start + batch_size]
+                document_ids = [d.id for d in batch]
+            
+                await document_pipeline.mark_many(
+                    document_ids=document_ids,
+                    stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+                )
+                logger.info(f"marked {len(batch)} documents as in progress")
+                task_results.append(tasks.chunk.delay([asdict(d) for d in batch]))            
+        except Exception as exc:
+            async with db.transaction():
+                await document_pipeline.mark_many(
+                    document_ids=document_ids,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"chunk failed for batch {i} while dispatching tasks: {repr(exc)}",
+                )
+                logger.error(f"chunk failed for batch {i} while dispatching tasks: {repr(exc)}")
+                continue
+            
+    results: list[list[dict]] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get, timeout=300) for task_result in task_results],
+        return_exceptions=True,
+    )
+    
+    for r in results:
+        if isinstance(r, BaseException):
+            logger.error(f"chunk failed while collecting results: {repr(r)}")
+            continue
+        
+        for item in r:            
+            try:
+                assert isinstance(item, dict)
+                responses.append(tasks.ChunkResponse(**item))
+            except Exception as exc:
+                await document_pipeline.mark_one(
+                    document_id=item["document_id"],
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"chunk failed while collecting results: {repr(exc)}",
+                )
+                logger.error(f"chunk failed for document {item["document_id"]} while collecting results: {repr(exc)}")
+    
+    for res in responses:
+        try:
+            async with db.transaction():
+                if len(res.chunk_ids) == 0:
+                    raise ValueError(f"no chunks for document {res.document_id}")
+                
                 if res.ok:
-                    if len(res.chunks) == 0:
-                        await document_pipeline.mark_one(
-                            document_id=res.document_id,
-                            stage_status=document_pipeline.StageStatus.FAILED,
-                            error=f"empty chunks"
-                        )
-                        logger.error(f"chunk failed for {res.document_id}, error: empty chunks")
-                        continue
-                    
-                    await services.create_document_chunks(document_id=res.document_id, chunks=res.chunks)
                     await document_pipeline.mark_one(
                         document_id=res.document_id,
                         stage_status=document_pipeline.StageStatus.DONE,
@@ -361,9 +373,9 @@ async def chunk_stage():
                     await document_pipeline.mark_one(
                         document_id=res.document_id,
                         stage_status=document_pipeline.StageStatus.FAILED,
-                        error=res.error,
+                        error=res.error
                     )
-                    logger.info(f"chunk failed for {res.document_id}, error: {res.error}")
+                    logger.error(f"chunk failed for {res.document_id}, error: {res.error}")
         except Exception as exc:
             # fresh txn: previous one already rolled back
             async with db.transaction():
@@ -406,45 +418,64 @@ async def transition_to_classification_stage():
             logger.error(f"transition to classification stage failed: {exc}")
             
 async def classification_stage():
-    async with db.transaction():
-        documents = await document_queue.claim(stage=document_pipeline.Stage.CLASSIFY)
-        batch_size = len(documents) // 5
-        results: list[ClassificationResponse] = []
-        
-        for i in range(5):
-            start = i * batch_size
-            batch = documents[start:start + batch_size]
-            
-            document_ids = [d.id for d in batch]
-            await document_pipeline.mark_many(
-                document_ids=document_ids,
-                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
-            )
-            
-            requests: list[ClassificationRequest] = []
-            for document in batch:
-                requests.append(asdict(ClassificationRequest(
-                    document_id=document.id,
-                    content=document.content,
-                )))
-            
-            try:
-                task_result = classify_task.delay(requests)       
-                dicts: list[dict] = await asyncio.to_thread(task_result.get)   
-                task_results: list[ClassificationResponse] = [ClassificationResponse(**v) for v in dicts]
-                for r in task_results:
-                    results.append(r)
-            except Exception as exc:
+    documents = await document_queue.claim(stage=document_pipeline.Stage.CLASSIFY)
+    batch_size = len(documents) // 5
+    task_results = []
+    responses: list[ClassificationResponse] = []
+    
+    for i in range(5):
+        try:
+            async with db.transaction():
+                start = i * batch_size
+                batch = documents[start:start + batch_size]
+                document_ids = [d.id for d in batch]
+
+                await document_pipeline.mark_many(
+                    document_ids=document_ids,
+                    stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+                )
+                logger.info(f"marked {len(batch)} documents as in progress for classification")
+                task_results.append(classify_task.delay([asdict(ClassificationRequest(
+                    document_id=d.id,
+                    content=d.content,    
+                )) for d in batch]))
+        except Exception as exc:
+            # fresh txn: previous one already rolled back
+            async with db.transaction():
                 await document_pipeline.mark_many(
                     document_ids=[d.id for d in batch],
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"classify task failed: {repr(exc)}",
+                    error=f"classify failed for batch {i} while dispatching tasks: {repr(exc)}",
                 )
-                logger.error(f"classify task failed: {exc}")
-                logger.warning(f"marked {len(batch)} documents as failed")
+                logger.error(f"classify failed for batch {i} while dispatching tasks: {repr(exc)}")
                 continue
+            
+    results: list[list[dict]] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get, timeout=300) for task_result in task_results],
+        return_exceptions=True,
+    )
     
-    for res in results:
+    for r in results:
+        if isinstance(r, BaseException):
+            logger.error(f"classify failed while collecting results: {repr(item)}")
+            continue
+        
+        for item in r:
+            if isinstance(item, BaseException):
+                logger.error(f"classify failed while collecting results: {repr(item)}")
+                continue
+            
+            try:
+                responses.append(ClassificationResponse(**item))
+            except Exception as exc:
+                await document_pipeline.mark_one(
+                    document_id=item["document_id"],
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"classify failed while collecting results: {repr(exc)}",
+                )
+                logger.error(f"classify failed for document {item["document_id"]} while collecting results: {repr(exc)}, results: {item}")
+    
+    for res in responses:
         try:
             async with db.transaction():
                 if res.ok:
@@ -513,9 +544,12 @@ async def transition_to_embedding_stage():
             logger.error(f"transition to embedding stage failed: {exc}")
                 
 async def embedding_stage():
-    async with db.transaction():
-        documents = await document_queue.claim(stage=document_pipeline.Stage.EMBEDDING)
-        for document in documents:
+    documents = await document_queue.claim(stage=document_pipeline.Stage.EMBEDDING)
+    responses: list[EmbedResponse] = []
+    task_results = []
+    
+    for document in documents:
+        try:
             logger.info(f"embedding document {document.id}")
             await document_pipeline.mark_one(
                 document_id=document.id,
@@ -527,47 +561,68 @@ async def embedding_stage():
                 document_id=document.id,
                 chunks=[{"id": c.id, "content": c.content} for c in chunks],
             ))
-            
-            try:
-                task_result = embed.delay(request)     
-                res: dict = await asyncio.to_thread(task_result.get)               
-                result = EmbedResponse(**res)
-            except Exception as exc:
-                await document_pipeline.mark_one(
-                    document_id=document.id,
-                    stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"embedding task failed: {repr(exc)}",
-                )
-                logger.error(f"embedding task failed: {exc}")
-                logger.warning(f"marked document {document.id} as failed")
-                continue
-    
-            try:
-                async with db.transaction():
-                    if result.ok:
-                        await document_pipeline.mark_one(
-                            document_id=result.document_id,
-                            stage_status=document_pipeline.StageStatus.DONE,
-                        )
-                        await document_pipeline.set_finished_at(
-                            document_id=result.document_id,
-                            finished_at=datetime.now(),
-                        )
-                        await document_queue.dequeue(document_id=result.document_id)
-                        logger.info(f"document {result.document_id} embedded")
-                    else:
-                        await document_pipeline.mark_one(
-                            document_id=result.document_id,
-                            stage_status=document_pipeline.StageStatus.FAILED,
-                            error=f"embedding failed for {result.document_id}, error: {result.error}",
-                        )
-                        logger.error(f"embedding failed for {result.document_id}, error: {result.error}")
-            except Exception as exc:
-                # fresh txn: previous one already rolled back
-                async with db.transaction():
+            task_results.append(embed.delay(request))
+        except Exception as exc:
+            await document_pipeline.mark_one(
+                document_id=document.id,
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"embedding failed while dispatching task: {repr(exc)}",
+            )
+            logger.error(f"embedding for document {document.id} failed while dispatching task: {repr(exc)}")
+            continue
+        
+    results: list[dict] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get, timeout=1800) for task_result in task_results],
+        return_exceptions=True,
+    )
+        
+    for res in results:
+        if isinstance(res, BaseException):
+            logger.error(f"embed failed while collecting results: {repr(res)}")
+            continue
+        
+        if not isinstance(res, dict):
+            logger.error(f"embed failed while collecting results: `res` should be a dict: {res}")
+            continue
+        
+        try:
+            responses.append(EmbedResponse(**res))
+        except Exception as exc:
+            await document_pipeline.mark_one(
+                document_id=res["document_id"],
+                stage_status=document_pipeline.StageStatus.FAILED,
+                error=f"embed failed while collecting results: {repr(exc)}",
+            )
+            logger.error(f"embed failed for document {res["document_id"]} while collecting results: {repr(exc)}, results: {item}")
+            continue
+        
+    for res in responses:
+        try:
+            async with db.transaction():
+                if res.ok:
                     await document_pipeline.mark_one(
-                        document_id=result.document_id,
-                        stage_status=document_pipeline.StageStatus.FAILED,
-                        error=f"embedding failed: {repr(exc)}",
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.DONE,
                     )
-                    logger.error(f"embedding failed for document {result.document_id}: {exc}")
+                    await document_pipeline.set_finished_at(
+                        document_id=res.document_id,
+                        finished_at=datetime.now(),
+                    )
+                    await document_queue.dequeue(document_id=res.document_id)
+                    logger.info(f"document {res.document_id} embedded")
+                else:
+                    await document_pipeline.mark_one(
+                        document_id=res.document_id,
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=f"embedding failed for {res.document_id}, error: {res.error}",
+                    )
+                    logger.error(f"embedding failed for {res.document_id}, error: {res.error}")
+        except Exception as exc:
+            # fresh txn: previous one already rolled back
+            async with db.transaction():
+                await document_pipeline.mark_one(
+                    document_id=res.document_id,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"embedding failed: {repr(exc)}",
+                )
+                logger.error(f"embedding failed for document {res.document_id}: {exc}")

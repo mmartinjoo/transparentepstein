@@ -1,0 +1,2 @@
+alter table ops.document_chunks
+add constraint document_chunks_document_id_position_unique unique(document_id, position);

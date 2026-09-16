@@ -4,7 +4,7 @@ import logging
 import traceback
 from typing import TypeAlias
 
-from transparentepstein.core import celery
+from transparentepstein.core import celery, db
 from transparentepstein.classification import create_classifier
 from transparentepstein.classification.classifier.base import ClassificationLabel, ClassifierType
 
@@ -26,12 +26,21 @@ DocumentId: TypeAlias = str
 DocumentContent: TypeAlias = str
 
 @celery.app.task
-def classify(requests: list[dict]):
+def classify(requests: list[dict]) -> list[dict]:
     requests_mapped = [ClassificationRequest(**r) for r in requests]
     for request in requests_mapped:
         assert request.content is not None and len(request.content) != 0
         
-    return asyncio.run(async_classify(requests_mapped))
+    return run_task(async_classify(requests_mapped))
+
+def run_task(coro):
+    async def _run():
+        await db.apool()
+        try:
+            return await coro
+        finally:
+            await db.close_apool()
+    return asyncio.run(_run())
 
 async def async_classify(requests: list[ClassificationRequest]) -> list[dict]:
     coros = []
