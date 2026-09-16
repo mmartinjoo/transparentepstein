@@ -11,7 +11,7 @@ async def async_main():
         # await stages.discover_stage()
         # await stages.fetch_stage()
         # await stages.transition_to_load_stage()
-        # await stages.load_stage()
+        await stages.load_stage()
         # await stages.transition_to_chunk_stage()
         # await stages.chunk_stage()
         # await stages.transition_to_classification_stage()

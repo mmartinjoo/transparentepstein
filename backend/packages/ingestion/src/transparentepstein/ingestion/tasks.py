@@ -30,7 +30,6 @@ class FetchResponse():
 class LoadResponse():
     document_id: int
     ok: bool
-    content: str | None = None    
     error: str | None = None
     
 @dataclass
@@ -125,16 +124,18 @@ async def async_load(documents: list[Document]) -> list[dict]:
 async def load_one(document: Document) -> dict:
     try:
         content = await services.load_document_content(s3_key=document.s3_key)
+        if content is None or len(content) == 0:
+            raise ValueError(f"content is empty for document {document.id}")
+        
+        await services.update_document_content(document_id=document.id, content=content)
         return asdict(LoadResponse(
             document_id=document.id,
-            content=content,
             ok=True,
         ))
     except Exception as exc:
         logger.error(f"load failed for {document.url} with error: {exc}")
         return asdict(LoadResponse(
             document_id=document.id,
-            content=None,
             ok=False,
             error=f"load failed: {repr(exc)}",
         ))

@@ -3,6 +3,7 @@ from dataclasses import asdict
 from datetime import datetime
 import logging
 from pprint import pprint
+import traceback
 
 from transparentepstein.classification.classifier.base import ClassificationLabel
 from transparentepstein.ingestion import selectors, tasks, services
@@ -60,10 +61,11 @@ async def fetch_stage():
     
     batch_size = len(documents) // 5
     task_results = []
+    responses: list[tasks.FetchResponse] = []
 
     for i in range(5):
-        async with db.transaction():            
-            try:
+        try:
+            async with db.transaction():            
                 start = i * batch_size
                 batch = documents[start:start + batch_size]
                 document_ids = [d.id for d in batch]
@@ -73,26 +75,33 @@ async def fetch_stage():
                     stage_status=document_pipeline.StageStatus.IN_PROGRESS,
                 )
                 logger.info(f"marked {len(batch)} documents as in progress")
-        
                 task_results.append(tasks.fetch.delay([asdict(d) for d in batch]))
-            except Exception as exc:
-                async with db.transaction():
-                    await document_pipeline.mark_many(
-                        document_id=document_ids,
-                        stage_status=document_pipeline.StageStatus.FAILED,
-                        error=f"fetch task failed for batch: {repr(exc)}",
-                    )
-                    logger.error(f"fetch task failed for batch: {repr(exc)}")
-                    continue
-        
+        except Exception as exc:
+            async with db.transaction():
+                await document_pipeline.mark_many(
+                    document_id=document_ids,
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"fetch failed for batch {i} while dispatching tasks: {repr(exc)}",
+                )
+                logger.error(f"fetch failed for batch while dispatching tasks: {repr(exc)}")
+                continue
+      
     results: list[dict] = await asyncio.gather(
         *[asyncio.to_thread(task_result.get) for task_result in task_results]
     )
-    
-    responses: list[tasks.FetchResponse] = []
+        
+        
     for r in results:
         for item in r:
-            responses.append(tasks.FetchResponse(**item))
+            try:          
+                responses.append(tasks.FetchResponse(**item))
+            except Exception as exc:
+                await document_pipeline.mark_one(
+                    document_id=item["document_id"],
+                    stage_status=document_pipeline.StageStatus.FAILED,
+                    error=f"fetch failed while collecting results: {repr(exc)}",
+                )
+                logger.error(f"fetch failed for document {item["document_id"]} while collecting results: {repr(exc)}")
             
     for res in responses:
         try:
@@ -117,9 +126,9 @@ async def fetch_stage():
                 await document_pipeline.mark_one(
                     document_id=res.document_id,
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=repr(exc),
+                    error=f"fetch failed while processing results: {repr(exc)}",
                 )
-                logger.error(f"fetch failed for document {res.document_id}: {exc}")
+                logger.error(f"fetch failed for document {res.document_id} while processing results: {repr(exc)}")
     
 async def transition_to_load_stage():
     documents = await document_pipeline.fetch(
@@ -163,51 +172,55 @@ async def transition_to_load_stage():
             logger.error(f"transition to load stage failed: {exc}")
           
 async def load_stage():
-    async with db.transaction():
-        documents = await document_queue.claim(stage=document_pipeline.Stage.LOAD)
-        batch_size = len(documents) // 5
-        results: list[tasks.LoadResponse] = []
-        
-        for i in range(5):
-            start = i * batch_size
-            batch = documents[start:start + batch_size]
-            document_ids = [d.id for d in batch]
-
-            await document_pipeline.mark_many(
-                document_ids=document_ids,
-                stage_status=document_pipeline.StageStatus.IN_PROGRESS,
-            )
-            
+    documents = await document_queue.claim(stage=document_pipeline.Stage.LOAD)
+    batch_size = len(documents) // 5
+    task_results = []
+    responses: list[tasks.LoadResponse] = []
+    
+    for i in range(5):
             try:
-                task_result = tasks.load.delay([asdict(d) for d in batch])
-                dicts: list[dict] = await asyncio.to_thread(task_result.get)
-                task_results: list[tasks.LoadResponse] = [tasks.LoadResponse(**v) for v in dicts]
-                for r in task_results:
-                    results.append(r)
+                async with db.transaction():                
+                    start = i * batch_size
+                    batch = documents[start:start + batch_size]
+                    document_ids = [d.id for d in batch]
+
+                    await document_pipeline.mark_many(
+                        document_ids=document_ids,
+                        stage_status=document_pipeline.StageStatus.IN_PROGRESS,
+                    )
+                    logger.info(f"marked {len(batch)} documents as in progress")
+                    task_results.append(tasks.load.delay([asdict(d) for d in batch]))
             except Exception as exc:
-                await document_pipeline.mark_many(
-                    document_ids=[d.id for d in batch],
+                # fresh txn: previous one already rolled back
+                async with db.transaction():
+                    await document_pipeline.mark_many(
+                        document_ids=[d.id for d in batch],
+                        stage_status=document_pipeline.StageStatus.FAILED,
+                        error=f"load failed for batch {i} while dispatching tasks: {repr(exc)}",
+                    )
+                    logger.error(f"load failed for batch {i} while dispatching tasks: {repr(exc)}")
+                    continue
+    
+    results: list[dict] = await asyncio.gather(
+        *[asyncio.to_thread(task_result.get) for task_result in task_results]
+    )
+        
+    for r in results:
+        for item in r:
+            try:
+                responses.append(tasks.LoadResponse(**item))
+            except Exception as exc:
+                await document_pipeline.mark_one(
+                    document_id=item["document_id"],
                     stage_status=document_pipeline.StageStatus.FAILED,
-                    error=f"load task failed: {repr(exc)}",
+                    error=f"load failed while collecting results: {repr(exc)}",
                 )
-                logger.error(f"load task failed: {exc}")
-                logger.warning(f"marked {len(batch)} documents as failed")
-                continue
-                
-    for res in results:
+                logger.error(f"load failed for document {item["document_id"]} while collecting results: {repr(exc)}, results: {item}")
+    
+    for res in responses:
         try:
             async with db.transaction():
                 if res.ok:
-                    if res.content is None:
-                        await document_pipeline.mark_one(
-                            document_id=res.document_id,
-                            stage_status=document_pipeline.StageStatus.FAILED,
-                            error=f"empty content"
-                        )
-                        logger.error(f"load failed for {res.document_id}, error: empty content")
-                        continue
-                    
-                    await services.update_document_content(document_id=res.document_id, content=res.content)
                     await document_pipeline.mark_one(
                         document_id=res.document_id,
                         stage_status=document_pipeline.StageStatus.DONE,
