@@ -59,7 +59,7 @@ async def apool() -> AsyncConnectionPool:
         _apool = AsyncConnectionPool(
             str(settings.database_url),
             min_size=1,
-            max_size=25,
+            max_size=100,
             reconnect_timeout=10,
             open=False, # open explicitly after, so it can be awaited
             kwargs={

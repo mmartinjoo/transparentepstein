@@ -9,6 +9,8 @@ from transparentepstein.classification import create_classifier
 from transparentepstein.classification.classifier.base import ClassificationLabel, ClassifierType
 
 logger = logging.getLogger(__name__)
+
+MAX_CONCURRENT_CLASSIFY = 8
     
 @dataclass
 class ClassificationRequest():
@@ -33,6 +35,11 @@ def classify(requests: list[dict]) -> list[dict]:
         
     return run_task(async_classify(requests_mapped))
 
+async def async_classify(requests: list[ClassificationRequest]) -> list[dict]:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CLASSIFY)
+    coros = [classify_one(request, semaphore) for request in requests]
+    return await asyncio.gather(*coros)
+
 def run_task(coro):
     async def _run():
         await db.apool()
@@ -42,30 +49,24 @@ def run_task(coro):
             await db.close_apool()
     return asyncio.run(_run())
 
-async def async_classify(requests: list[ClassificationRequest]) -> list[dict]:
-    coros = []
-    for request in requests:
-        coros.append(classify_one(request))
-        
-    return await asyncio.gather(*coros)
-
-async def classify_one(request: ClassificationRequest) -> dict:
-    try:
-        classifier = create_classifier(type=ClassifierType.REGEX)
-        label: ClassificationLabel = classifier.classify(content=request.content)
-        
-        if label is None:
-            raise ValueError("classifier returned None")
-        
-        return asdict(ClassificationResponse(
-            document_id=request.document_id,
-            label=label.name,
-            ok=True,
-        ))
-    except Exception as exc:
-        return asdict(ClassificationResponse(
-            document_id=request.document_id,
-            label=None,
-            ok=False,
-            error=traceback.format_exc(exc),
-        ))
+async def classify_one(request: ClassificationRequest, semaphore: asyncio.Semaphore) -> dict:
+    async with semaphore:
+        try:
+            classifier = create_classifier(type=ClassifierType.REGEX)
+            label: ClassificationLabel = classifier.classify(content=request.content)
+            
+            if label is None:
+                raise ValueError("classifier returned None")
+            
+            return asdict(ClassificationResponse(
+                document_id=request.document_id,
+                label=label.name,
+                ok=True,
+            ))
+        except Exception as exc:
+            return asdict(ClassificationResponse(
+                document_id=request.document_id,
+                label=None,
+                ok=False,
+                error=traceback.format_exc(exc),
+            ))

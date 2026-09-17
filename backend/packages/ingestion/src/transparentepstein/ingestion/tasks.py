@@ -9,7 +9,9 @@ from transparentepstein.ingestion.models import Document, DataSet
 
 logger = logging.getLogger(__name__)
 
-MAX_CONCURRENT_FETCHES = 8
+MAX_CONCURRENT_FETCHES = 4
+MAX_CONCURRENT_LOADS = 8
+MAX_CONCURRENT_CHUNKS = 6
 
 @dataclass
 class DiscoverResponse():
@@ -70,26 +72,26 @@ def run_task(coro):
 
 async def async_discover(data_set: DataSet) -> dict:
     try:
-        # discover the entire page or nothing
-        async with db.transaction():
-            urls = await scraper.discover(
-                data_set=data_set,
-                page=data_set.processed_until_page + 1,
-            )
-        
-            document_ids = []
-            for url in urls:
+        urls = await scraper.discover(
+            data_set=data_set,
+            page=data_set.processed_until_page + 1,
+        )
+    
+        document_ids = []
+        for url in urls:
+            # discover the entire page or nothing                
+            async with db.transaction():
                 document = await services.create_document(
                     url=url,
                     data_set_id=data_set.id,
                 )
                 document_ids.append(document.id)
-        
-            return asdict(DiscoverResponse(
-                data_set_id=data_set.id,
-                document_ids=document_ids,
-                ok=True,
-            ))
+    
+        return asdict(DiscoverResponse(
+            data_set_id=data_set.id,
+            document_ids=document_ids,
+            ok=True,
+        ))
     except Exception as exc:
         logger.error(f"discover failed for data set {data_set.id}: {repr(exc)}")
         return asdict(DiscoverResponse(
@@ -101,6 +103,16 @@ async def async_discover(data_set: DataSet) -> dict:
 async def async_fetch(documents: list[Document]) -> list[dict]:
     semaphore = asyncio.Semaphore(value=MAX_CONCURRENT_FETCHES)
     coros = [fetch_one(d, semaphore) for d in documents]
+    return await asyncio.gather(*coros)
+
+async def async_load(documents: list[Document]) -> list[dict]:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_LOADS)
+    coros = [load_one(document, semaphore) for document in documents]
+    return await asyncio.gather(*coros)
+
+async def async_chunk(documents: list[Document]) -> list[dict]:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
+    coros = [chunk_one(document, semaphore) for document in documents]
     return await asyncio.gather(*coros)
         
 async def fetch_one(document: Document, semaphore: asyncio.Semaphore) -> dict:
@@ -132,43 +144,30 @@ async def fetch_one(document: Document, semaphore: asyncio.Semaphore) -> dict:
                 ok=False,
                 error=f"fetch failed: {repr(exc)}",
             ))
+
+async def load_one(document: Document, semaphore: asyncio.Semaphore) -> dict:
+    async with semaphore:
+        try:
+            content = await services.load_document_content(s3_key=document.s3_key)
+            if content is None or len(content) == 0:
+                raise ValueError(f"content is empty for document {document.id}")
             
-async def async_load(documents: list[Document]) -> list[dict]:
-    coros = []
-    for document in documents:
-        coros.append(load_one(document))
-        
-    return await asyncio.gather(*coros)
+            await services.update_document_content(document_id=document.id, content=content)
+            return asdict(LoadResponse(
+                document_id=document.id,
+                ok=True,
+            ))
+        except Exception as exc:
+            logger.error(f"load failed for {document.url} with error: {exc}")
+            return asdict(LoadResponse(
+                document_id=document.id,
+                ok=False,
+                error=f"load failed: {repr(exc)}",
+            ))
 
-async def load_one(document: Document) -> dict:
-    try:
-        content = await services.load_document_content(s3_key=document.s3_key)
-        if content is None or len(content) == 0:
-            raise ValueError(f"content is empty for document {document.id}")
-        
-        await services.update_document_content(document_id=document.id, content=content)
-        return asdict(LoadResponse(
-            document_id=document.id,
-            ok=True,
-        ))
-    except Exception as exc:
-        logger.error(f"load failed for {document.url} with error: {exc}")
-        return asdict(LoadResponse(
-            document_id=document.id,
-            ok=False,
-            error=f"load failed: {repr(exc)}",
-        ))
-        
-async def async_chunk(documents: list[Document]) -> list[dict]:
-    coros = []
-    for document in documents:
-        coros.append(chunk_one(document))
-        
-    return await asyncio.gather(*coros)
-
-async def chunk_one(document: Document) -> dict:
-    try:
-        async with db.transaction():        
+async def chunk_one(document: Document, semaphore: asyncio.Semaphore) -> dict:
+    async with semaphore:
+        try:
             if document.content is None or len(document.content) == 0:
                 raise ValueError(f"content is None for document {document.id}")
             
@@ -179,11 +178,11 @@ async def chunk_one(document: Document) -> dict:
                 chunk_ids=chunk_ids,
                 ok=True,
             ))
-    except Exception as exc:
-        logger.error(f"chunk failed for {document.url} with error: {exc}")
-        return asdict(ChunkResponse(
-            document_id=document.id,
-            ok=False,
-            error=f"chunk failed: {repr(exc)}",
-        ))
+        except Exception as exc:
+            logger.error(f"chunk failed for {document.url} with error: {exc}")
+            return asdict(ChunkResponse(
+                document_id=document.id,
+                ok=False,
+                error=f"chunk failed: {repr(exc)}",
+            ))
         
