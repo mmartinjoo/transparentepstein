@@ -173,7 +173,7 @@ async def chunk_one(document: Document) -> dict:
                 raise ValueError(f"content is None for document {document.id}")
             
             chunks = await asyncio.to_thread(services.chunk_text, text=document.content)
-            chunk_ids = await services.upsert_document_chunks(document_id=document.id, chunks=chunks)
+            chunk_ids = await services.create_document_chunks(document_id=document.id, chunks=chunks)
             return asdict(ChunkResponse(
                 document_id=document.id,
                 chunk_ids=chunk_ids,

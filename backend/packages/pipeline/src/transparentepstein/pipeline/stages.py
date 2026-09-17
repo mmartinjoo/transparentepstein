@@ -359,11 +359,11 @@ async def chunk_stage():
     
     for res in responses:
         try:
-            async with db.transaction():
-                if len(res.chunk_ids) == 0:
-                    raise ValueError(f"no chunks for document {res.document_id}")
-                
+            async with db.transaction():                
                 if res.ok:
+                    if len(res.chunk_ids) == 0:
+                        raise ValueError(f"no chunks for document {res.document_id}")
+                    
                     await document_pipeline.mark_one(
                         document_id=res.document_id,
                         stage_status=document_pipeline.StageStatus.DONE,

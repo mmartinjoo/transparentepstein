@@ -43,34 +43,35 @@ async def update_document_content(document_id: int, content: str):
         ],
     )
     
-async def upsert_document_chunks(document_id: int, chunks: list[str]) -> list[int]:
+async def create_document_chunks(document_id: int, chunks: list[str]) -> list[int]:
     assert len(chunks) != 0
     
-    ids = []
-    
+    values: list[str] = []
+    inputs = []
     for idx, chunk in enumerate(chunks):
-        row = await db.insert(
-            query="""
-                insert into ops.document_chunks(document_id, position, content, created_at)
-                values(%s, %s, %s, now())
-                on conflict (document_id, position) 
-                do update set
-                    content = %s
-                returning id
-            """,
-            inputs=[
-                document_id,
-                idx,
-                chunk,
-                chunk,
-            ],
-            returning=True,
-            row_factory=dict_row,
-        )
+        values.append("%s, %s, %s, now()")
+        inputs.extend([document_id, idx, chunk])
         
-        ids.append(row["id"])
-
-    return ids
+    query = "insert into ops.document_chunks(document_id, position, content, created_at) values"
+    for idx, value in enumerate(values):
+        separator = "" if idx == len(values) - 1 else ","
+        query += f"\n({value}){separator}"
+        
+    query += """
+        on conflict (document_id, position)
+        do nothing
+        returning id
+    """
+    
+    rows = await db.insert(
+        query=query,
+        inputs=inputs,
+        returning=True,
+        returning_many=True,
+        row_factory=dict_row,
+    )
+    
+    return [r["id"] for r in rows]
 
 def _load_pages(doc) -> str:
     content: str = ""

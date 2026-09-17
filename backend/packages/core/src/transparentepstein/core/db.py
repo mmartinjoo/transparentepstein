@@ -104,10 +104,13 @@ async def insert(
     inputs: list,
     row_factory = None,
     returning: bool = False,
+    returning_many: bool = False,
 ):
     async with _cursor(row_factory=row_factory) as cur:
         await cur.execute(query, inputs)
-        if returning:
+        if returning and returning_many:
+            return await cur.fetchall()
+        if returning and not returning_many:
             return await cur.fetchone()
         
 async def update(

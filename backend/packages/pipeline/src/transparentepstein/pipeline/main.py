@@ -18,7 +18,7 @@ async def async_main():
         # await stages.transition_to_classification_stage()
         # await stages.classification_stage()
         # await stages.transition_to_embedding_stage()
-        await stages.embedding_stage()
+        # await stages.embedding_stage()
     finally:
         await close_apool()
     
